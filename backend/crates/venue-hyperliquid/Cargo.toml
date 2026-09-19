@@ -1,0 +1,13 @@
+[package]
+name = "venue-hyperliquid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+market-data = { path = "../market-data" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+venue = { path = "../venue" }

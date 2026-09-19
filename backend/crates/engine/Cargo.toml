@@ -1,0 +1,11 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+market-data = { path = "../market-data" }
+sha2 = "0.10"

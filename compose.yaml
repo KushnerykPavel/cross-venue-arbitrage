@@ -1,0 +1,70 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_DIRTY: ${GIT_DIRTY:-true}
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATA_DIR: /data
+      DATA_MIN_FREE_GIB: ${DATA_MIN_FREE_GIB:-20}
+    restart: "${RESTART_POLICY:-no}"
+    stop_grace_period: 1m
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-2g}
+    cpus: "${BACKEND_CPUS:-2.0}"
+    volumes:
+      - type: bind
+        source: ${DATA_DIR:?set DATA_DIR to an absolute host path}
+        target: /data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          kill -0 1 &&
+          available_kib=$$(df -Pk /data | awk 'NR == 2 { print $$4 }') &&
+          [ "$$available_kib" -ge "$$((DATA_MIN_FREE_GIB * 1024 * 1024))" ]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-50m}"
+        max-file: "${LOG_MAX_FILES:-5}"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
+    restart: unless-stopped
+    init: true
+    mem_limit: ${FRONTEND_MEMORY_LIMIT:-128m}
+    cpus: "${FRONTEND_CPUS:-0.5}"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --output-document=- http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${LOG_MAX_SIZE:-50m}"
+        max-file: "${LOG_MAX_FILES:-5}"

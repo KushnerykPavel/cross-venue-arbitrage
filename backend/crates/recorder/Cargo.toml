@@ -1,0 +1,20 @@
+[package]
+name = "recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+crc32c = "0.6"
+crossbeam-channel = "0.5"
+domain = { path = "../domain" }
+market-data = { path = "../market-data" }
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3"

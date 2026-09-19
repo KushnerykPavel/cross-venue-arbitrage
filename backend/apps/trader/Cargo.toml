@@ -1,0 +1,18 @@
+[package]
+name = "trader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain = { path = "../../crates/domain" }
+dotenvy = "0.15"
+engine = { path = "../../crates/engine" }
+market-data = { path = "../../crates/market-data" }
+recorder = { path = "../../crates/recorder" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+venue = { path = "../../crates/venue" }
+venue-aster = { path = "../../crates/venue-aster" }
+venue-hyperliquid = { path = "../../crates/venue-hyperliquid" }
+venue-lighter = { path = "../../crates/venue-lighter" }

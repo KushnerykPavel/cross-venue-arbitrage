@@ -1,0 +1,157 @@
+version: "3"
+
+dotenv:
+  - backend/.env
+
+vars:
+  COMPOSE: docker compose --env-file backend/.env
+  BUILD_GIT_COMMIT:
+    sh: git rev-parse HEAD 2>/dev/null || printf unknown
+  BUILD_GIT_DIRTY:
+    sh: >-
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        test -z "$(git status --porcelain)" && printf false || printf true;
+      else
+        printf true;
+      fi
+
+tasks:
+  default:
+    desc: Show available project commands
+    cmds:
+      - task --list
+
+  _env-check:
+    internal: true
+    preconditions:
+      - sh: test -f backend/.env
+        msg: "backend/.env is missing; copy backend/.env.example and configure it first"
+
+  config:
+    desc: Validate and print the resolved Compose configuration
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} config"
+
+  build:
+    desc: Build backend and frontend container images
+    deps: [_env-check]
+    env:
+      GIT_COMMIT: "{{.BUILD_GIT_COMMIT}}"
+      GIT_DIRTY: "{{.BUILD_GIT_DIRTY}}"
+    cmds:
+      - "{{.COMPOSE}} build {{.CLI_ARGS}}"
+
+  vps:init-data:
+    desc: Create the VPS data directory for the non-root backend user
+    deps: [_env-check]
+    preconditions:
+      - sh: 'case "$DATA_DIR" in /*) exit 0 ;; *) exit 1 ;; esac'
+        msg: "DATA_DIR must be an absolute path"
+    cmds:
+      - sudo install -d -o 10001 -g 10001 -- "$DATA_DIR"
+
+  preflight:
+    desc: Validate Compose, data-directory permissions, and free disk space
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} config --quiet"
+      - >-
+        {{.COMPOSE}} run --rm --no-deps backend sh -ec
+        'test -w /data || { echo "DATA_DIR is not writable by container UID 10001" >&2; exit 1; };
+        available_kib=$(df -Pk /data | awk "NR == 2 { print \$4 }");
+        required_kib=$((DATA_MIN_FREE_GIB * 1024 * 1024));
+        test "$available_kib" -ge "$required_kib" || {
+          echo "DATA_DIR has less than ${DATA_MIN_FREE_GIB} GiB free" >&2; exit 1;
+        };
+        df -h /data'
+
+  start:
+    desc: Build and start one capture in the background
+    cmds:
+      - task: build
+      - task: preflight
+      - "{{.COMPOSE}} up --detach"
+
+  continuous:
+    desc: Continuously create captures by restarting the backend after each run
+    cmds:
+      - task: build
+      - task: preflight
+      - "RESTART_POLICY=unless-stopped {{.COMPOSE}} up --detach"
+
+  capture:
+    desc: Run the backend collector in the foreground and show its output
+    cmds:
+      - task: build
+      - task: preflight
+      - "{{.COMPOSE}} up backend"
+
+  stop:
+    desc: Gracefully stop all project containers
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} stop"
+
+  restart:
+    desc: Gracefully stop and start the project
+    cmds:
+      - task: stop
+      - task: start
+
+  down:
+    desc: Gracefully stop and remove containers and the Compose network
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} down"
+
+  status:
+    desc: Show container status
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} ps"
+
+  logs:
+    desc: Follow logs from all containers
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} logs --follow --tail=200"
+
+  logs:backend:
+    desc: Follow backend collector logs
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} logs --follow --tail=200 backend"
+
+  captures:
+    desc: List canonical captures stored in DATA_DIR
+    deps: [_env-check]
+    cmds:
+      - "{{.COMPOSE}} run --rm --no-deps backend sh -ec 'ls -1 /data/captures'"
+
+  replay:
+    desc: Validate and deterministically replay a capture (CAPTURE_ID required)
+    deps: [_env-check]
+    requires:
+      vars: [CAPTURE_ID]
+    cmds:
+      - >-
+        {{.COMPOSE}} run --rm --no-deps backend
+        replay "/data/captures/{{.CAPTURE_ID}}" {{.CLI_ARGS}}
+
+  export:
+    desc: Export a capture to a new Parquet dataset (CAPTURE_ID and DATASET required)
+    deps: [_env-check]
+    requires:
+      vars: [CAPTURE_ID, DATASET]
+    cmds:
+      - >-
+        {{.COMPOSE}} run --rm --no-deps backend
+        export-parquet "/data/captures/{{.CAPTURE_ID}}"
+        "/data/parquet/{{.DATASET}}" {{.CLI_ARGS}}
+
+  test:
+    desc: Run the Rust workspace tests
+    dir: backend
+    cmds:
+      - cargo test --workspace

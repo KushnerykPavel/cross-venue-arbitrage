@@ -1,0 +1,21 @@
+[package]
+name = "export-parquet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arrow-array = "60"
+arrow-schema = "60"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+domain = { path = "../../crates/domain" }
+market-data = { path = "../../crates/market-data" }
+parquet = { version = "60", features = ["arrow"] }
+recorder = { path = "../../crates/recorder" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

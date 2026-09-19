@@ -1,0 +1,1 @@
+//! opportunity definitions belong here.
