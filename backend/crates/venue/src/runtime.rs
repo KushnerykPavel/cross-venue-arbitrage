@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use domain::{MarketCoin, Venue};
 use market_data::{LocalObservationTime, NormalizedMarketEvent};
@@ -12,7 +12,7 @@ use crate::transport::{
 };
 
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(2);
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(120);
 
 pub type ShutdownSignal = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 
@@ -199,14 +199,15 @@ where
 
         let unavailable = adapter.on_disconnected(&disconnect_reason, clock.now());
         publish_disconnect_actions(unavailable, &mut on_event)?;
+        let retry_in = jittered_reconnect_delay(reconnect_delay);
         on_event(LiveSessionEvent::Disconnected {
             venue: adapter.venue(),
             reason: disconnect_reason,
-            retry_in: reconnect_delay,
+            retry_in,
         })?;
 
         let should_stop = tokio::select! {
-            () = sleep(reconnect_delay) => false,
+            () = sleep(retry_in) => false,
             result = &mut shutdown => {
                 result?;
                 true
@@ -418,6 +419,26 @@ async fn heartbeat_tick(interval: &mut Option<Interval>) {
 
 fn next_reconnect_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RECONNECT_DELAY)
+}
+
+fn jittered_reconnect_delay(base: Duration) -> Duration {
+    let entropy = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    jittered_reconnect_delay_with_entropy(base, entropy)
+}
+
+fn jittered_reconnect_delay_with_entropy(base: Duration, entropy: u128) -> Duration {
+    let base_millis = base.as_millis().min(u128::from(u64::MAX)) as u64;
+    let jitter_millis = (base_millis / 4).min(10_000);
+    if jitter_millis == 0 {
+        return base;
+    }
+
+    let span = jitter_millis.saturating_mul(2).saturating_add(1);
+    let offset = (entropy % u128::from(span)) as i64 - jitter_millis as i64;
+    let delay_millis = (base_millis as i64 + offset).max(1) as u64;
+    Duration::from_millis(delay_millis)
 }
 
 #[cfg(test)]
@@ -680,5 +701,34 @@ mod tests {
 
         assert_eq!(error.to_string(), "dedup capacity exceeded");
         assert!(transport.connections.is_empty());
+    }
+
+    #[test]
+    fn reconnect_backoff_caps_at_two_minutes() {
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(2)),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(120)),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            next_reconnect_delay(Duration::from_secs(90)),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn reconnect_jitter_stays_within_twenty_five_percent() {
+        let base = Duration::from_secs(120);
+        let minimum = Duration::from_secs(110);
+        let maximum = Duration::from_secs(130);
+
+        for entropy in [0, 1, 10_000, 20_000, 100_000] {
+            let delay = jittered_reconnect_delay_with_entropy(base, entropy);
+            assert!(delay >= minimum);
+            assert!(delay <= maximum);
+        }
     }
 }
