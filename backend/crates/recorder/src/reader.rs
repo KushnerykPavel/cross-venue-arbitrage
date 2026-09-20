@@ -20,6 +20,18 @@ pub struct ReadSegment {
     pub events: Vec<StoredEventV1>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadSegmentSummary {
+    pub capture_id: Uuid,
+    pub segment_index: u32,
+    pub created_at_unix_millis: u64,
+    pub byte_size: u64,
+    pub sha256: [u8; 32],
+    pub record_count: u64,
+    pub first_capture_sequence: u64,
+    pub last_capture_sequence: u64,
+}
+
 #[derive(Debug)]
 pub enum SegmentReadError {
     NotFinalizedLog,
@@ -93,6 +105,78 @@ pub fn read_segment(
         byte_size,
         sha256,
         events,
+    })
+}
+
+pub fn read_segment_streaming(
+    path: &Path,
+    expected_capture_id: Uuid,
+    expected_segment_index: u32,
+    mut visit: impl FnMut(StoredEventV1),
+) -> Result<ReadSegmentSummary, SegmentReadError> {
+    if !ensure_log_extension(path) {
+        return Err(SegmentReadError::NotFinalizedLog);
+    }
+    let mut file = File::open(path).map_err(SegmentReadError::Io)?;
+    let byte_size = file.metadata().map_err(SegmentReadError::Io)?.len();
+    let header = read_header(&mut file).map_err(map_header_error)?;
+    if header.capture_id != expected_capture_id {
+        return Err(SegmentReadError::CaptureIdMismatch {
+            expected: expected_capture_id,
+            actual: header.capture_id,
+        });
+    }
+    if header.segment_index != expected_segment_index {
+        return Err(SegmentReadError::SegmentIndexMismatch {
+            expected: expected_segment_index,
+            actual: header.segment_index,
+        });
+    }
+
+    let mut record_count = 0_u64;
+    let mut expected_sequence = None;
+    let mut first_capture_sequence = None;
+    let mut last_capture_sequence = None;
+    while let Some((event, _end_offset)) = read_record(&mut file, byte_size)
+        .map_err(|error| SegmentReadError::CorruptRecord(error.to_string()))?
+    {
+        let sequence = event.capture_sequence();
+        if sequence == 0 {
+            return Err(SegmentReadError::ZeroCaptureSequence);
+        }
+        if let Some(expected) = expected_sequence
+            && sequence != expected
+        {
+            return Err(SegmentReadError::SequenceMismatch {
+                expected,
+                actual: sequence,
+            });
+        }
+        expected_sequence = Some(
+            sequence
+                .checked_add(1)
+                .ok_or(SegmentReadError::SequenceOverflow)?,
+        );
+        first_capture_sequence.get_or_insert(sequence);
+        last_capture_sequence = Some(sequence);
+        record_count = record_count
+            .checked_add(1)
+            .ok_or(SegmentReadError::SequenceOverflow)?;
+        visit(event);
+    }
+
+    let first_capture_sequence = first_capture_sequence.ok_or(SegmentReadError::EmptySegment)?;
+    let last_capture_sequence =
+        last_capture_sequence.expect("first sequence implies last sequence");
+    Ok(ReadSegmentSummary {
+        capture_id: header.capture_id,
+        segment_index: header.segment_index,
+        created_at_unix_millis: header.created_at_unix_millis,
+        byte_size,
+        sha256: sha256_file(path).map_err(SegmentReadError::Io)?,
+        record_count,
+        first_capture_sequence,
+        last_capture_sequence,
     })
 }
 

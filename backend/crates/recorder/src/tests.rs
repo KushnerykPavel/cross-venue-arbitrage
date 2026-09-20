@@ -206,8 +206,12 @@ fn validates_entire_capture_before_exposing_replay_events() {
 
     let validated =
         ValidatedCapture::open(&capture_directory, ValidationOptions::default()).unwrap();
-    assert_eq!(validated.events().len(), 1);
-    assert_eq!(validated.events()[0].capture_sequence, 1);
+    assert_eq!(validated.event_count(), 1);
+    let mut sequences = Vec::new();
+    validated
+        .for_each_event(|event| sequences.push(event.capture_sequence))
+        .unwrap();
+    assert_eq!(sequences, [1]);
 
     fs::write(capture_directory.join("segment-999999.log"), b"unlisted").unwrap();
     assert!(matches!(

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CaptureManifest, CaptureStatus, SegmentReadError, StorageConversionError, read_segment,
+    CaptureManifest, CaptureStatus, SegmentReadError, StorageConversionError,
+    read_segment_streaming,
 };
 
 const SUPPORTED_MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -28,7 +29,6 @@ pub struct ValidatedReplayEvent {
 pub struct ValidatedCapture {
     directory: PathBuf,
     manifest: CaptureManifest,
-    events: Vec<ValidatedReplayEvent>,
 }
 
 #[derive(Debug)]
@@ -77,7 +77,6 @@ impl ValidatedCapture {
         validate_configuration_hash(&manifest)?;
         validate_log_inventory(&directory, &manifest)?;
 
-        let mut events = Vec::new();
         let mut expected_capture_sequence = 1_u64;
         for (position, segment) in manifest.segments.iter().enumerate() {
             let expected_index = u32::try_from(position).map_err(|_| {
@@ -115,12 +114,26 @@ impl ValidatedCapture {
                     value: segment.completion_status.clone(),
                 });
             }
-            let read = read_segment(
+            let mut conversion_error = None;
+            let read = read_segment_streaming(
                 &directory.join(&segment.filename),
                 manifest.capture_id,
                 expected_index,
+                |stored| {
+                    if conversion_error.is_none() {
+                        if let Err(source) = stored.to_normalized() {
+                            conversion_error = Some((stored.capture_sequence(), source));
+                        }
+                    }
+                },
             )
             .map_err(CaptureValidationError::SegmentRead)?;
+            if let Some((capture_sequence, source)) = conversion_error {
+                return Err(CaptureValidationError::StorageConversion {
+                    capture_sequence,
+                    source,
+                });
+            }
             if encode_hex(&read.sha256) != segment.sha256 {
                 return Err(CaptureValidationError::SegmentHashMismatch(expected_index));
             }
@@ -129,56 +142,35 @@ impl ValidatedCapture {
                     expected_index,
                 ));
             }
-            if read.events.len() as u128 != u128::from(segment.record_count) {
+            if read.record_count != segment.record_count {
                 return Err(CaptureValidationError::SegmentRecordCountMismatch(
                     expected_index,
                 ));
             }
-            let first = read
-                .events
-                .first()
-                .expect("read_segment rejects empty segments")
-                .capture_sequence();
-            let last = read
-                .events
-                .last()
-                .expect("read_segment rejects empty segments")
-                .capture_sequence();
-            if first != segment.first_capture_sequence || last != segment.last_capture_sequence {
+            if read.first_capture_sequence != expected_capture_sequence {
+                return Err(CaptureValidationError::CaptureSequenceMismatch {
+                    expected: expected_capture_sequence,
+                    actual: read.first_capture_sequence,
+                });
+            }
+            if read.first_capture_sequence != segment.first_capture_sequence
+                || read.last_capture_sequence != segment.last_capture_sequence
+            {
                 return Err(CaptureValidationError::SegmentSequenceRangeMismatch(
                     expected_index,
                 ));
             }
-            for stored in read.events {
-                let actual = stored.capture_sequence();
-                if actual != expected_capture_sequence {
-                    return Err(CaptureValidationError::CaptureSequenceMismatch {
-                        expected: expected_capture_sequence,
-                        actual,
-                    });
-                }
-                let event = stored.to_normalized().map_err(|source| {
-                    CaptureValidationError::StorageConversion {
-                        capture_sequence: actual,
-                        source,
-                    }
-                })?;
-                events.push(ValidatedReplayEvent {
-                    capture_sequence: actual,
-                    event,
+            if read.last_capture_sequence == u64::MAX {
+                return Err(CaptureValidationError::CaptureSequenceMismatch {
+                    expected: u64::MAX,
+                    actual: read.last_capture_sequence,
                 });
-                expected_capture_sequence = actual.checked_add(1).ok_or(
-                    CaptureValidationError::CaptureSequenceMismatch {
-                        expected: u64::MAX,
-                        actual,
-                    },
-                )?;
             }
+            expected_capture_sequence = read.last_capture_sequence + 1;
         }
         Ok(Self {
             directory,
             manifest,
-            events,
         })
     }
 
@@ -190,12 +182,55 @@ impl ValidatedCapture {
         &self.manifest
     }
 
-    pub fn events(&self) -> &[ValidatedReplayEvent] {
-        &self.events
+    pub fn event_count(&self) -> u64 {
+        self.manifest
+            .segments
+            .iter()
+            .map(|segment| segment.record_count)
+            .sum()
     }
 
-    pub fn into_events(self) -> Vec<ValidatedReplayEvent> {
-        self.events
+    pub fn for_each_event(
+        &self,
+        mut visit: impl FnMut(ValidatedReplayEvent),
+    ) -> Result<(), CaptureValidationError> {
+        for (position, segment) in self.manifest.segments.iter().enumerate() {
+            let index = u32::try_from(position).map_err(|_| {
+                CaptureValidationError::SegmentIndexMismatch {
+                    expected: u32::MAX,
+                    actual: segment.index,
+                }
+            })?;
+            let mut conversion_error = None;
+            read_segment_streaming(
+                &self.directory.join(&segment.filename),
+                self.manifest.capture_id,
+                index,
+                |stored| {
+                    if conversion_error.is_some() {
+                        return;
+                    }
+                    let sequence = stored.capture_sequence();
+                    match stored.to_normalized() {
+                        Ok(event) => visit(ValidatedReplayEvent {
+                            capture_sequence: sequence,
+                            event,
+                        }),
+                        Err(source) => {
+                            conversion_error = Some(CaptureValidationError::StorageConversion {
+                                capture_sequence: sequence,
+                                source,
+                            });
+                        }
+                    }
+                },
+            )
+            .map_err(CaptureValidationError::SegmentRead)?;
+            if let Some(error) = conversion_error {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 }
 

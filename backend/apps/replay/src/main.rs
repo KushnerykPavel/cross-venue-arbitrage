@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         manifest.capture_id,
         manifest.capture_status,
         manifest.segments.len(),
-        capture.events().len()
+        capture.event_count()
     );
     if !arguments.configuration_overrides.is_empty() {
         println!(
@@ -39,8 +39,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut engine = MarketDataEngine::new();
-    for event in capture.into_events() {
-        engine.process(event.capture_sequence, &event.event)?;
+    let mut engine_error = None;
+    capture.for_each_event(|event| {
+        if engine_error.is_none() {
+            engine_error = engine.process(event.capture_sequence, &event.event).err();
+        }
+    })?;
+    if let Some(error) = engine_error {
+        return Err(Box::new(error));
     }
     let report = engine.report();
     println!(

@@ -17,7 +17,9 @@ pub use manifest::{
     CaptureManifest, CaptureMetadata, CaptureStatus, DataQualityCounters, ResolvedVenueMarket,
     SegmentManifestEntry,
 };
-pub use reader::{ReadSegment, SegmentReadError, read_segment};
+pub use reader::{
+    ReadSegment, ReadSegmentSummary, SegmentReadError, read_segment, read_segment_streaming,
+};
 pub use recovery::{RecoveryError, RecoveryOutcome, recover_open_segment};
 pub use validated::{
     CaptureValidationError, ValidatedCapture, ValidatedReplayEvent, ValidationOptions,

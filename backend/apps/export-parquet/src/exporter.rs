@@ -110,13 +110,14 @@ pub fn export_capture(request: ExportRequest) -> Result<ExportResult, ExportErro
     let temporary = temporary_directory(&request.output_directory, &capture_id)?;
     fs::create_dir_all(&temporary).map_err(ExportError::Io)?;
 
+    let canonical_event_count = capture.event_count();
     let result = export_into(
         &temporary,
         &date,
         &capture_id,
         manifest,
         &manifest_sha256,
-        capture.events(),
+        &capture,
     );
     let table_rows = match result {
         Ok(rows) => rows,
@@ -129,8 +130,7 @@ pub fn export_capture(request: ExportRequest) -> Result<ExportResult, ExportErro
     Ok(ExportResult {
         output_directory: request.output_directory,
         capture_id,
-        canonical_event_count: u64::try_from(capture.events().len())
-            .map_err(|_| ExportError::RowCountOverflow)?,
+        canonical_event_count,
         table_rows,
     })
 }
@@ -141,8 +141,9 @@ fn export_into(
     capture_id: &str,
     manifest: &recorder::CaptureManifest,
     manifest_sha256: &str,
-    events: &[recorder::ValidatedReplayEvent],
+    capture: &ValidatedCapture,
 ) -> Result<BTreeMap<String, u64>, ExportError> {
+    const EVENT_BATCH_ROWS: u64 = 4_096;
     let mut books = BTreeMap::<Partition, Vec<OrderBookEventRow>>::new();
     let mut trades = BTreeMap::<Partition, Vec<MarketTradeRow>>::new();
     let mut availability = BTreeMap::<Partition, Vec<AvailabilityRow>>::new();
@@ -150,202 +151,272 @@ fn export_into(
     let version_root = output.join(format!("version={PARQUET_SCHEMA_VERSION}"));
     let mut levels = LevelSinks::new(&version_root, date, capture_id);
 
-    for replay_event in events {
-        let event = &replay_event.event;
-        let venue = venue_name(event.venue()).to_owned();
-        let market = event.market_coin().to_string();
-        let partition = Partition {
-            venue: venue.clone(),
-            market: market.clone(),
-        };
-        match event {
-            NormalizedMarketEvent::OrderBookSnapshot(snapshot) => {
-                books
-                    .entry(partition.clone())
-                    .or_default()
-                    .push(OrderBookEventRow {
-                        capture_id: capture_id.into(),
-                        sequence: replay_event.capture_sequence,
-                        venue: venue.clone(),
-                        market: market.clone(),
-                        local_receive: snapshot.timestamps().local_receive().nanos_since_start(),
-                        processing_completion: snapshot
-                            .timestamps()
-                            .processing_completed()
-                            .nanos_since_start(),
-                        source_sequence: snapshot.source_sequence(),
-                        bid_count: u32::try_from(snapshot.bids().len())
-                            .map_err(|_| ExportError::RowCountOverflow)?,
-                        ask_count: u32::try_from(snapshot.asks().len())
-                            .map_err(|_| ExportError::RowCountOverflow)?,
-                    });
-                for (position, level) in snapshot.bids().iter().enumerate() {
-                    levels.push(
-                        partition.clone(),
-                        OrderBookLevelRow {
+    let mut table_rows = BTreeMap::from([
+        ("captures".into(), 1_u64),
+        ("order_book_events".into(), 0_u64),
+        ("order_book_levels".into(), 0_u64),
+        ("market_trades".into(), 0_u64),
+        ("availability_events".into(), 0_u64),
+        ("exchange_times".into(), 0_u64),
+    ]);
+    let mut processed_events = 0_u64;
+    let mut batch_index = 0_u64;
+    let mut export_error = None;
+
+    capture
+        .for_each_event(|replay_event| {
+            if export_error.is_some() {
+                return;
+            }
+            let event = &replay_event.event;
+            let venue = venue_name(event.venue()).to_owned();
+            let market = event.market_coin().to_string();
+            let partition = Partition {
+                venue: venue.clone(),
+                market: market.clone(),
+            };
+            let result = (|| -> Result<(), ExportError> {
+                match event {
+                    NormalizedMarketEvent::OrderBookSnapshot(snapshot) => {
+                        books
+                            .entry(partition.clone())
+                            .or_default()
+                            .push(OrderBookEventRow {
+                                capture_id: capture_id.into(),
+                                sequence: replay_event.capture_sequence,
+                                venue: venue.clone(),
+                                market: market.clone(),
+                                local_receive: snapshot
+                                    .timestamps()
+                                    .local_receive()
+                                    .nanos_since_start(),
+                                processing_completion: snapshot
+                                    .timestamps()
+                                    .processing_completed()
+                                    .nanos_since_start(),
+                                source_sequence: snapshot.source_sequence(),
+                                bid_count: u32::try_from(snapshot.bids().len())
+                                    .map_err(|_| ExportError::RowCountOverflow)?,
+                                ask_count: u32::try_from(snapshot.asks().len())
+                                    .map_err(|_| ExportError::RowCountOverflow)?,
+                            });
+                        for (position, level) in snapshot.bids().iter().enumerate() {
+                            levels.push(
+                                partition.clone(),
+                                OrderBookLevelRow {
+                                    capture_id: capture_id.into(),
+                                    sequence: replay_event.capture_sequence,
+                                    venue: venue.clone(),
+                                    market: market.clone(),
+                                    side: "bid".into(),
+                                    position: u32::try_from(position)
+                                        .map_err(|_| ExportError::RowCountOverflow)?,
+                                    price: decimal38(
+                                        level.price().coefficient(),
+                                        level.price().scale(),
+                                    )?,
+                                    quantity: decimal38(
+                                        level.quantity().coefficient(),
+                                        level.quantity().scale(),
+                                    )?,
+                                    order_count: level.order_count().map(std::num::NonZeroU32::get),
+                                },
+                            )?;
+                        }
+                        for (position, level) in snapshot.asks().iter().enumerate() {
+                            levels.push(
+                                partition.clone(),
+                                OrderBookLevelRow {
+                                    capture_id: capture_id.into(),
+                                    sequence: replay_event.capture_sequence,
+                                    venue: venue.clone(),
+                                    market: market.clone(),
+                                    side: "ask".into(),
+                                    position: u32::try_from(position)
+                                        .map_err(|_| ExportError::RowCountOverflow)?,
+                                    price: decimal38(
+                                        level.price().coefficient(),
+                                        level.price().scale(),
+                                    )?,
+                                    quantity: decimal38(
+                                        level.quantity().coefficient(),
+                                        level.quantity().scale(),
+                                    )?,
+                                    order_count: level.order_count().map(std::num::NonZeroU32::get),
+                                },
+                            )?;
+                        }
+                        append_exchange_times(
+                            &mut exchange_times,
+                            partition,
+                            capture_id,
+                            replay_event.capture_sequence,
+                            &venue,
+                            &market,
+                            snapshot.timestamps(),
+                        )
+                    }
+                    NormalizedMarketEvent::MarketTrade(trade) => {
+                        let mut row = MarketTradeRow {
                             capture_id: capture_id.into(),
                             sequence: replay_event.capture_sequence,
                             venue: venue.clone(),
                             market: market.clone(),
-                            side: "bid".into(),
-                            position: u32::try_from(position)
-                                .map_err(|_| ExportError::RowCountOverflow)?,
-                            price: decimal38(level.price().coefficient(), level.price().scale())?,
+                            local_receive: trade.timestamps().local_receive().nanos_since_start(),
+                            processing_completion: trade
+                                .timestamps()
+                                .processing_completed()
+                                .nanos_since_start(),
+                            price: decimal38(trade.price().coefficient(), trade.price().scale())?,
                             quantity: decimal38(
-                                level.quantity().coefficient(),
-                                level.quantity().scale(),
+                                trade.quantity().coefficient(),
+                                trade.quantity().scale(),
                             )?,
-                            order_count: level.order_count().map(std::num::NonZeroU32::get),
-                        },
-                    )?;
+                            reporting_kind: format!("{:?}", trade.reporting_kind()),
+                            trade_kind: format!("{:?}", trade.trade_kind()),
+                            aggressor_side: format!("{:?}", trade.aggressor_side()),
+                            classification: format!("{:?}", trade.aggressor_side_classification()),
+                            aggregate_trade_id: None,
+                            first_trade_id: None,
+                            last_trade_id: None,
+                            block_time: None,
+                            trade_id_u64: None,
+                            transaction_hash: None,
+                            market_id: None,
+                            trade_id_string: None,
+                            message_nonce: None,
+                        };
+                        match trade.identity() {
+                            MarketTradeIdentity::Aster {
+                                aggregate_trade_id,
+                                first_trade_id,
+                                last_trade_id,
+                            } => {
+                                row.aggregate_trade_id = Some(*aggregate_trade_id);
+                                row.first_trade_id = Some(*first_trade_id);
+                                row.last_trade_id = Some(*last_trade_id);
+                            }
+                            MarketTradeIdentity::Hyperliquid {
+                                block_time,
+                                trade_id,
+                                transaction_hash,
+                            } => {
+                                row.block_time = Some(*block_time);
+                                row.trade_id_u64 = Some(*trade_id);
+                                row.transaction_hash = Some(transaction_hash.clone());
+                            }
+                            MarketTradeIdentity::Lighter {
+                                market_id,
+                                trade_id,
+                                message_nonce,
+                            } => {
+                                row.market_id = Some(*market_id);
+                                row.trade_id_string = Some(trade_id.clone());
+                                row.message_nonce = *message_nonce;
+                            }
+                        }
+                        trades.entry(partition.clone()).or_default().push(row);
+                        append_exchange_times(
+                            &mut exchange_times,
+                            partition,
+                            capture_id,
+                            replay_event.capture_sequence,
+                            &venue,
+                            &market,
+                            trade.timestamps(),
+                        )
+                    }
+                    NormalizedMarketEvent::OrderBookUnavailable(event) => {
+                        availability
+                            .entry(partition)
+                            .or_default()
+                            .push(AvailabilityRow {
+                                capture_id: capture_id.into(),
+                                sequence: replay_event.capture_sequence,
+                                venue,
+                                market,
+                                stream: "order_book".into(),
+                                transition: "unavailable".into(),
+                                category: Some(format!("{:?}", event.category())),
+                                diagnostic: Some(event.diagnostic().into()),
+                                observed_at: event.observed_at().nanos_since_start(),
+                            });
+                        Ok(())
+                    }
+                    NormalizedMarketEvent::TradeStreamUnavailable(event) => {
+                        availability
+                            .entry(partition)
+                            .or_default()
+                            .push(AvailabilityRow {
+                                capture_id: capture_id.into(),
+                                sequence: replay_event.capture_sequence,
+                                venue,
+                                market,
+                                stream: "trade_stream".into(),
+                                transition: "unavailable".into(),
+                                category: Some(format!("{:?}", event.category())),
+                                diagnostic: Some(event.diagnostic().into()),
+                                observed_at: event.observed_at().nanos_since_start(),
+                            });
+                        Ok(())
+                    }
+                    NormalizedMarketEvent::TradeStreamResumed(event) => {
+                        availability
+                            .entry(partition)
+                            .or_default()
+                            .push(AvailabilityRow {
+                                capture_id: capture_id.into(),
+                                sequence: replay_event.capture_sequence,
+                                venue,
+                                market,
+                                stream: "trade_stream".into(),
+                                transition: "resumed".into(),
+                                category: None,
+                                diagnostic: None,
+                                observed_at: event.observed_at().nanos_since_start(),
+                            });
+                        Ok(())
+                    }
                 }
-                for (position, level) in snapshot.asks().iter().enumerate() {
-                    levels.push(
-                        partition.clone(),
-                        OrderBookLevelRow {
-                            capture_id: capture_id.into(),
-                            sequence: replay_event.capture_sequence,
-                            venue: venue.clone(),
-                            market: market.clone(),
-                            side: "ask".into(),
-                            position: u32::try_from(position)
-                                .map_err(|_| ExportError::RowCountOverflow)?,
-                            price: decimal38(level.price().coefficient(), level.price().scale())?,
-                            quantity: decimal38(
-                                level.quantity().coefficient(),
-                                level.quantity().scale(),
-                            )?,
-                            order_count: level.order_count().map(std::num::NonZeroU32::get),
-                        },
-                    )?;
-                }
-                append_exchange_times(
-                    &mut exchange_times,
-                    partition,
+            })();
+            if let Err(error) = result {
+                export_error = Some(error);
+                return;
+            }
+            processed_events += 1;
+            if processed_events % EVENT_BATCH_ROWS == 0 {
+                if let Err(error) = flush_event_batches(
+                    &version_root,
+                    date,
                     capture_id,
-                    replay_event.capture_sequence,
-                    &venue,
-                    &market,
-                    snapshot.timestamps(),
-                )?;
-            }
-            NormalizedMarketEvent::MarketTrade(trade) => {
-                let mut row = MarketTradeRow {
-                    capture_id: capture_id.into(),
-                    sequence: replay_event.capture_sequence,
-                    venue: venue.clone(),
-                    market: market.clone(),
-                    local_receive: trade.timestamps().local_receive().nanos_since_start(),
-                    processing_completion: trade
-                        .timestamps()
-                        .processing_completed()
-                        .nanos_since_start(),
-                    price: decimal38(trade.price().coefficient(), trade.price().scale())?,
-                    quantity: decimal38(trade.quantity().coefficient(), trade.quantity().scale())?,
-                    reporting_kind: format!("{:?}", trade.reporting_kind()),
-                    trade_kind: format!("{:?}", trade.trade_kind()),
-                    aggressor_side: format!("{:?}", trade.aggressor_side()),
-                    classification: format!("{:?}", trade.aggressor_side_classification()),
-                    aggregate_trade_id: None,
-                    first_trade_id: None,
-                    last_trade_id: None,
-                    block_time: None,
-                    trade_id_u64: None,
-                    transaction_hash: None,
-                    market_id: None,
-                    trade_id_string: None,
-                    message_nonce: None,
-                };
-                match trade.identity() {
-                    MarketTradeIdentity::Aster {
-                        aggregate_trade_id,
-                        first_trade_id,
-                        last_trade_id,
-                    } => {
-                        row.aggregate_trade_id = Some(*aggregate_trade_id);
-                        row.first_trade_id = Some(*first_trade_id);
-                        row.last_trade_id = Some(*last_trade_id);
-                    }
-                    MarketTradeIdentity::Hyperliquid {
-                        block_time,
-                        trade_id,
-                        transaction_hash,
-                    } => {
-                        row.block_time = Some(*block_time);
-                        row.trade_id_u64 = Some(*trade_id);
-                        row.transaction_hash = Some(transaction_hash.clone());
-                    }
-                    MarketTradeIdentity::Lighter {
-                        market_id,
-                        trade_id,
-                        message_nonce,
-                    } => {
-                        row.market_id = Some(*market_id);
-                        row.trade_id_string = Some(trade_id.clone());
-                        row.message_nonce = *message_nonce;
-                    }
-                }
-                trades.entry(partition.clone()).or_default().push(row);
-                append_exchange_times(
+                    batch_index,
+                    &mut books,
+                    &mut trades,
+                    &mut availability,
                     &mut exchange_times,
-                    partition,
-                    capture_id,
-                    replay_event.capture_sequence,
-                    &venue,
-                    &market,
-                    trade.timestamps(),
-                )?;
+                    &mut table_rows,
+                ) {
+                    export_error = Some(error);
+                } else {
+                    batch_index += 1;
+                }
             }
-            NormalizedMarketEvent::OrderBookUnavailable(event) => {
-                availability
-                    .entry(partition)
-                    .or_default()
-                    .push(AvailabilityRow {
-                        capture_id: capture_id.into(),
-                        sequence: replay_event.capture_sequence,
-                        venue,
-                        market,
-                        stream: "order_book".into(),
-                        transition: "unavailable".into(),
-                        category: Some(format!("{:?}", event.category())),
-                        diagnostic: Some(event.diagnostic().into()),
-                        observed_at: event.observed_at().nanos_since_start(),
-                    });
-            }
-            NormalizedMarketEvent::TradeStreamUnavailable(event) => {
-                availability
-                    .entry(partition)
-                    .or_default()
-                    .push(AvailabilityRow {
-                        capture_id: capture_id.into(),
-                        sequence: replay_event.capture_sequence,
-                        venue,
-                        market,
-                        stream: "trade_stream".into(),
-                        transition: "unavailable".into(),
-                        category: Some(format!("{:?}", event.category())),
-                        diagnostic: Some(event.diagnostic().into()),
-                        observed_at: event.observed_at().nanos_since_start(),
-                    });
-            }
-            NormalizedMarketEvent::TradeStreamResumed(event) => {
-                availability
-                    .entry(partition)
-                    .or_default()
-                    .push(AvailabilityRow {
-                        capture_id: capture_id.into(),
-                        sequence: replay_event.capture_sequence,
-                        venue,
-                        market,
-                        stream: "trade_stream".into(),
-                        transition: "resumed".into(),
-                        category: None,
-                        diagnostic: None,
-                        observed_at: event.observed_at().nanos_since_start(),
-                    });
-            }
-        }
+        })
+        .map_err(ExportError::Validation)?;
+    if let Some(error) = export_error {
+        return Err(error);
     }
+    flush_event_batches(
+        &version_root,
+        date,
+        capture_id,
+        batch_index,
+        &mut books,
+        &mut trades,
+        &mut availability,
+        &mut exchange_times,
+        &mut table_rows,
+    )?;
 
     let configuration_json = serde_json::to_string(&manifest.configuration).map_err(|error| {
         ExportError::Io(io::Error::other(format!(
@@ -368,6 +439,7 @@ fn export_into(
     }];
 
     let level_row_count = levels.finish()?;
+    table_rows.insert("order_book_levels".into(), level_row_count);
     write_partition(
         &version_root,
         date,
@@ -379,49 +451,7 @@ fn export_into(
         capture_id,
         |path| write_captures(path, &capture_rows),
     )?;
-    write_groups(
-        &version_root,
-        date,
-        "order_book_events",
-        capture_id,
-        &books,
-        write_order_book_events,
-    )?;
-    write_groups(
-        &version_root,
-        date,
-        "market_trades",
-        capture_id,
-        &trades,
-        write_market_trades,
-    )?;
-    write_groups(
-        &version_root,
-        date,
-        "availability_events",
-        capture_id,
-        &availability,
-        write_availability,
-    )?;
-    write_groups(
-        &version_root,
-        date,
-        "exchange_times",
-        capture_id,
-        &exchange_times,
-        write_exchange_times,
-    )?;
-
-    let table_rows = BTreeMap::from([
-        ("captures".into(), 1),
-        ("order_book_events".into(), total_rows(&books)?),
-        ("order_book_levels".into(), level_row_count),
-        ("market_trades".into(), total_rows(&trades)?),
-        ("availability_events".into(), total_rows(&availability)?),
-        ("exchange_times".into(), total_rows(&exchange_times)?),
-    ]);
-    let canonical_events =
-        u64::try_from(events.len()).map_err(|_| ExportError::RowCountOverflow)?;
+    let canonical_events = capture.event_count();
     let exported_events = table_rows["order_book_events"]
         .checked_add(table_rows["market_trades"])
         .and_then(|value| value.checked_add(table_rows["availability_events"]))
@@ -450,6 +480,89 @@ fn export_into(
     )
     .map_err(ExportError::Io)?;
     Ok(table_rows)
+}
+
+fn flush_event_batches(
+    root: &Path,
+    date: &str,
+    capture_id: &str,
+    batch_index: u64,
+    books: &mut BTreeMap<Partition, Vec<OrderBookEventRow>>,
+    trades: &mut BTreeMap<Partition, Vec<MarketTradeRow>>,
+    availability: &mut BTreeMap<Partition, Vec<AvailabilityRow>>,
+    exchange_times: &mut BTreeMap<Partition, Vec<ExchangeTimeRow>>,
+    table_rows: &mut BTreeMap<String, u64>,
+) -> Result<(), ExportError> {
+    let books_count = flush_groups(
+        root,
+        date,
+        "order_book_events",
+        capture_id,
+        batch_index,
+        books,
+        write_order_book_events,
+    )?;
+    let trades_count = flush_groups(
+        root,
+        date,
+        "market_trades",
+        capture_id,
+        batch_index,
+        trades,
+        write_market_trades,
+    )?;
+    let availability_count = flush_groups(
+        root,
+        date,
+        "availability_events",
+        capture_id,
+        batch_index,
+        availability,
+        write_availability,
+    )?;
+    let exchange_times_count = flush_groups(
+        root,
+        date,
+        "exchange_times",
+        capture_id,
+        batch_index,
+        exchange_times,
+        write_exchange_times,
+    )?;
+    *table_rows
+        .get_mut("order_book_events")
+        .expect("table exists") += books_count;
+    *table_rows.get_mut("market_trades").expect("table exists") += trades_count;
+    *table_rows
+        .get_mut("availability_events")
+        .expect("table exists") += availability_count;
+    *table_rows.get_mut("exchange_times").expect("table exists") += exchange_times_count;
+    Ok(())
+}
+
+fn flush_groups<Row>(
+    root: &Path,
+    date: &str,
+    table: &str,
+    capture_id: &str,
+    batch_index: u64,
+    groups: &mut BTreeMap<Partition, Vec<Row>>,
+    write: TableWrite<Row>,
+) -> Result<u64, ExportError> {
+    let mut count = 0_u64;
+    let filename = format!("part-{capture_id}-{batch_index:06}.parquet");
+    for (partition, rows) in groups.iter_mut() {
+        if rows.is_empty() {
+            continue;
+        }
+        let path = partition_file_path_named(root, date, table, partition, &filename)?;
+        write(&path, rows).map_err(|error| ExportError::Parquet(error.to_string()))?;
+        count = count
+            .checked_add(u64::try_from(rows.len()).map_err(|_| ExportError::RowCountOverflow)?)
+            .ok_or(ExportError::RowCountOverflow)?;
+        rows.clear();
+    }
+    Ok(count)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -539,22 +652,6 @@ impl LevelSinks {
     }
 }
 
-fn write_groups<Row>(
-    root: &Path,
-    date: &str,
-    table: &str,
-    capture_id: &str,
-    groups: &BTreeMap<Partition, Vec<Row>>,
-    write: TableWrite<Row>,
-) -> Result<(), ExportError> {
-    for (partition, rows) in groups {
-        write_partition(root, date, table, partition, capture_id, |path| {
-            write(path, rows)
-        })?;
-    }
-    Ok(())
-}
-
 fn write_partition(
     root: &Path,
     date: &str,
@@ -574,6 +671,22 @@ fn partition_file_path(
     partition: &Partition,
     capture_id: &str,
 ) -> Result<PathBuf, ExportError> {
+    partition_file_path_named(
+        root,
+        date,
+        table,
+        partition,
+        &format!("part-{capture_id}.parquet"),
+    )
+}
+
+fn partition_file_path_named(
+    root: &Path,
+    date: &str,
+    table: &str,
+    partition: &Partition,
+    filename: &str,
+) -> Result<PathBuf, ExportError> {
     let directory = root
         .join(format!("date={date}"))
         .join(format!("event_type={table}"))
@@ -583,15 +696,7 @@ fn partition_file_path(
             safe_partition_value(&partition.market)
         ));
     fs::create_dir_all(&directory).map_err(ExportError::Io)?;
-    Ok(directory.join(format!("part-{capture_id}.parquet")))
-}
-
-fn total_rows<Row>(groups: &BTreeMap<Partition, Vec<Row>>) -> Result<u64, ExportError> {
-    groups.values().try_fold(0_u64, |total, rows| {
-        total
-            .checked_add(u64::try_from(rows.len()).map_err(|_| ExportError::RowCountOverflow)?)
-            .ok_or(ExportError::RowCountOverflow)
-    })
+    Ok(directory.join(filename))
 }
 
 fn decimal38(coefficient: i128, scale: u8) -> Result<i128, ExportError> {
