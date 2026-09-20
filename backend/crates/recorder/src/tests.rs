@@ -7,8 +7,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use domain::{MarketCoin, Price, Quantity, Symbol, Venue};
 use market_data::{
-    AggressorSide, AggressorSideClassification, BookLevel, EventTimestamps, ExchangeTimeKind,
-    ExchangeTimeObservation, ExchangeTimeUnit, LocalObservationTime, MarketTrade,
+    AggressorSide, AggressorSideClassification, BestBidOffer, BookLevel, EventTimestamps,
+    ExchangeTimeKind, ExchangeTimeObservation, ExchangeTimeUnit, LocalObservationTime, MarketTrade,
     MarketTradeIdentity, MarketTradeKind, MarketTradeReportingKind, NormalizedMarketEvent,
     OrderBookSnapshot, TradeStreamResumed,
 };
@@ -170,6 +170,33 @@ fn storage_dto_round_trips_to_the_same_normalized_event() {
         Venue::Lighter,
         MarketCoin::try_new("BTC").unwrap(),
         LocalObservationTime::from_nanos_since_start(42),
+    ));
+    let stored = StoredEventV1::from_normalized(1, &original).unwrap();
+
+    assert_eq!(stored.to_normalized().unwrap(), original);
+}
+
+#[test]
+fn bbo_storage_round_trip_preserves_nullable_sides_and_timestamps() {
+    let coin = MarketCoin::try_new("BTC").unwrap();
+    let original = NormalizedMarketEvent::BestBidOfferUpdated(BestBidOffer::new(
+        Venue::Hyperliquid,
+        Symbol::perpetual(coin),
+        EventTimestamps::new(
+            vec![ExchangeTimeObservation::new(
+                ExchangeTimeKind::EventTime,
+                123,
+                ExchangeTimeUnit::Unknown,
+            )],
+            LocalObservationTime::from_nanos_since_start(10),
+            LocalObservationTime::from_nanos_since_start(11),
+        ),
+        None,
+        Some(BookLevel::new(
+            Price::from_str("101").unwrap(),
+            Quantity::from_str("2").unwrap(),
+            Some(NonZeroU32::new(3).unwrap()),
+        )),
     ));
     let stored = StoredEventV1::from_normalized(1, &original).unwrap();
 

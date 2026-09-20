@@ -1,6 +1,6 @@
 use domain::{MarketCoin, Price, Quantity, Symbol, Venue};
 
-use crate::OrderBookSnapshot;
+use crate::{BookLevel, OrderBookSnapshot};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct LocalObservationTime(u64);
@@ -296,6 +296,49 @@ pub struct TradeStreamResumed {
     observed_at: LocalObservationTime,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BestBidOffer {
+    venue: Venue,
+    symbol: Symbol,
+    timestamps: EventTimestamps,
+    bid: Option<BookLevel>,
+    ask: Option<BookLevel>,
+}
+
+impl BestBidOffer {
+    pub fn new(
+        venue: Venue,
+        symbol: Symbol,
+        timestamps: EventTimestamps,
+        bid: Option<BookLevel>,
+        ask: Option<BookLevel>,
+    ) -> Self {
+        Self {
+            venue,
+            symbol,
+            timestamps,
+            bid,
+            ask,
+        }
+    }
+
+    pub const fn venue(&self) -> Venue {
+        self.venue
+    }
+    pub const fn symbol(&self) -> &Symbol {
+        &self.symbol
+    }
+    pub const fn timestamps(&self) -> &EventTimestamps {
+        &self.timestamps
+    }
+    pub const fn bid(&self) -> Option<&BookLevel> {
+        self.bid.as_ref()
+    }
+    pub const fn ask(&self) -> Option<&BookLevel> {
+        self.ask.as_ref()
+    }
+}
+
 impl TradeStreamResumed {
     pub const fn new(
         venue: Venue,
@@ -325,6 +368,7 @@ impl TradeStreamResumed {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NormalizedMarketEvent {
     OrderBookSnapshot(OrderBookSnapshot),
+    BestBidOfferUpdated(BestBidOffer),
     OrderBookUnavailable(MarketDataUnavailable),
     MarketTrade(MarketTrade),
     TradeStreamUnavailable(MarketDataUnavailable),
@@ -335,6 +379,7 @@ impl NormalizedMarketEvent {
     pub const fn venue(&self) -> Venue {
         match self {
             Self::OrderBookSnapshot(snapshot) => snapshot.venue(),
+            Self::BestBidOfferUpdated(bbo) => bbo.venue(),
             Self::OrderBookUnavailable(event) | Self::TradeStreamUnavailable(event) => {
                 event.venue()
             }
@@ -346,6 +391,7 @@ impl NormalizedMarketEvent {
     pub const fn market_coin(&self) -> &MarketCoin {
         match self {
             Self::OrderBookSnapshot(snapshot) => snapshot.symbol().market_coin(),
+            Self::BestBidOfferUpdated(bbo) => bbo.symbol().market_coin(),
             Self::OrderBookUnavailable(event) | Self::TradeStreamUnavailable(event) => {
                 event.market_coin()
             }

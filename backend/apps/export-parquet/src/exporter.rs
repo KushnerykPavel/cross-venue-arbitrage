@@ -9,19 +9,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 use domain::Venue;
 use market_data::{
-    EventTimestamps, ExchangeTimeKind, ExchangeTimeUnit, MarketTradeIdentity, NormalizedMarketEvent,
+    BestBidOffer, EventTimestamps, ExchangeTimeKind, ExchangeTimeUnit, MarketTradeIdentity,
+    NormalizedMarketEvent,
 };
 use recorder::{CaptureStatus, ValidatedCapture, ValidationOptions};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::parquet_tables::{
-    AvailabilityRow, CaptureRow, ExchangeTimeRow, MarketTradeRow, OrderBookEventRow,
-    OrderBookLevelRow, OrderBookLevelWriter, write_availability, write_captures,
-    write_exchange_times, write_market_trades, write_order_book_events,
+    AvailabilityRow, BestBidOfferRow, CaptureRow, ExchangeTimeRow, MarketTradeRow,
+    OrderBookEventRow, OrderBookLevelRow, OrderBookLevelWriter, write_availability,
+    write_best_bid_offers, write_captures, write_exchange_times, write_market_trades,
+    write_order_book_events,
 };
 
-const PARQUET_SCHEMA_VERSION: u32 = 1;
+const PARQUET_SCHEMA_VERSION: u32 = 2;
 const LEVEL_BATCH_ROWS: usize = 4_096;
 type TableWrite<Row> = fn(&Path, &[Row]) -> Result<(), Box<dyn Error>>;
 
@@ -145,6 +147,7 @@ fn export_into(
 ) -> Result<BTreeMap<String, u64>, ExportError> {
     const EVENT_BATCH_ROWS: u64 = 4_096;
     let mut books = BTreeMap::<Partition, Vec<OrderBookEventRow>>::new();
+    let mut best_bid_offers = BTreeMap::<Partition, Vec<BestBidOfferRow>>::new();
     let mut trades = BTreeMap::<Partition, Vec<MarketTradeRow>>::new();
     let mut availability = BTreeMap::<Partition, Vec<AvailabilityRow>>::new();
     let mut exchange_times = BTreeMap::<Partition, Vec<ExchangeTimeRow>>::new();
@@ -154,6 +157,7 @@ fn export_into(
     let mut table_rows = BTreeMap::from([
         ("captures".into(), 1_u64),
         ("order_book_events".into(), 0_u64),
+        ("best_bid_offers".into(), 0_u64),
         ("order_book_levels".into(), 0_u64),
         ("market_trades".into(), 0_u64),
         ("availability_events".into(), 0_u64),
@@ -326,6 +330,58 @@ fn export_into(
                             trade.timestamps(),
                         )
                     }
+                    NormalizedMarketEvent::BestBidOfferUpdated(bbo) => {
+                        let bid = match bbo.bid() {
+                            Some(level) => Some((
+                                decimal38(level.price().coefficient(), level.price().scale())?,
+                                decimal38(
+                                    level.quantity().coefficient(),
+                                    level.quantity().scale(),
+                                )?,
+                                level.order_count().map(std::num::NonZeroU32::get),
+                            )),
+                            None => None,
+                        };
+                        let ask = match bbo.ask() {
+                            Some(level) => Some((
+                                decimal38(level.price().coefficient(), level.price().scale())?,
+                                decimal38(
+                                    level.quantity().coefficient(),
+                                    level.quantity().scale(),
+                                )?,
+                                level.order_count().map(std::num::NonZeroU32::get),
+                            )),
+                            None => None,
+                        };
+                        best_bid_offers.entry(partition.clone()).or_default().push(
+                            BestBidOfferRow {
+                                capture_id: capture_id.into(),
+                                sequence: replay_event.capture_sequence,
+                                venue: venue.clone(),
+                                market: market.clone(),
+                                local_receive: bbo.timestamps().local_receive().nanos_since_start(),
+                                processing_completion: bbo
+                                    .timestamps()
+                                    .processing_completed()
+                                    .nanos_since_start(),
+                                bid_price: bid.as_ref().map(|value| value.0),
+                                bid_quantity: bid.as_ref().map(|value| value.1),
+                                bid_order_count: bid.and_then(|value| value.2),
+                                ask_price: ask.as_ref().map(|value| value.0),
+                                ask_quantity: ask.as_ref().map(|value| value.1),
+                                ask_order_count: ask.and_then(|value| value.2),
+                            },
+                        );
+                        append_exchange_times(
+                            &mut exchange_times,
+                            partition,
+                            capture_id,
+                            replay_event.capture_sequence,
+                            &venue,
+                            &market,
+                            bbo.timestamps(),
+                        )
+                    }
                     NormalizedMarketEvent::OrderBookUnavailable(event) => {
                         availability
                             .entry(partition)
@@ -391,6 +447,7 @@ fn export_into(
                     capture_id,
                     batch_index,
                     &mut books,
+                    &mut best_bid_offers,
                     &mut trades,
                     &mut availability,
                     &mut exchange_times,
@@ -412,6 +469,7 @@ fn export_into(
         capture_id,
         batch_index,
         &mut books,
+        &mut best_bid_offers,
         &mut trades,
         &mut availability,
         &mut exchange_times,
@@ -453,7 +511,8 @@ fn export_into(
     )?;
     let canonical_events = capture.event_count();
     let exported_events = table_rows["order_book_events"]
-        .checked_add(table_rows["market_trades"])
+        .checked_add(table_rows["best_bid_offers"])
+        .and_then(|value| value.checked_add(table_rows["market_trades"]))
         .and_then(|value| value.checked_add(table_rows["availability_events"]))
         .ok_or(ExportError::RowCountOverflow)?;
     if canonical_events != exported_events {
@@ -488,6 +547,7 @@ fn flush_event_batches(
     capture_id: &str,
     batch_index: u64,
     books: &mut BTreeMap<Partition, Vec<OrderBookEventRow>>,
+    best_bid_offers: &mut BTreeMap<Partition, Vec<BestBidOfferRow>>,
     trades: &mut BTreeMap<Partition, Vec<MarketTradeRow>>,
     availability: &mut BTreeMap<Partition, Vec<AvailabilityRow>>,
     exchange_times: &mut BTreeMap<Partition, Vec<ExchangeTimeRow>>,
@@ -511,6 +571,15 @@ fn flush_event_batches(
         trades,
         write_market_trades,
     )?;
+    let best_bid_offers_count = flush_groups(
+        root,
+        date,
+        "best_bid_offers",
+        capture_id,
+        batch_index,
+        best_bid_offers,
+        write_best_bid_offers,
+    )?;
     let availability_count = flush_groups(
         root,
         date,
@@ -532,6 +601,7 @@ fn flush_event_batches(
     *table_rows
         .get_mut("order_book_events")
         .expect("table exists") += books_count;
+    *table_rows.get_mut("best_bid_offers").expect("table exists") += best_bid_offers_count;
     *table_rows.get_mut("market_trades").expect("table exists") += trades_count;
     *table_rows
         .get_mut("availability_events")
@@ -953,8 +1023,18 @@ mod tests {
             )],
         )
         .unwrap();
+        let bbo = BestBidOffer::new(
+            Venue::Aster,
+            snapshot.symbol().clone(),
+            snapshot.timestamps().clone(),
+            snapshot.bids().first().cloned(),
+            snapshot.asks().first().cloned(),
+        );
         capture
             .accept(NormalizedMarketEvent::OrderBookSnapshot(snapshot))
+            .unwrap();
+        capture
+            .accept(NormalizedMarketEvent::BestBidOfferUpdated(bbo))
             .unwrap();
         capture
             .finish(CaptureStatus::Complete, started_at + Duration::from_secs(1))
@@ -968,11 +1048,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(result.table_rows["order_book_events"], 1);
+        assert_eq!(result.table_rows["best_bid_offers"], 1);
         assert_eq!(result.table_rows["order_book_levels"], 2);
-        assert_eq!(result.table_rows["exchange_times"], 1);
+        assert_eq!(result.table_rows["exchange_times"], 2);
 
         let levels_path = output
-            .join("version=1/date=1970-01-01/event_type=order_book_levels")
+            .join("version=2/date=1970-01-01/event_type=order_book_levels")
             .join("venue=aster/market=BTC")
             .join(format!("part-{}.parquet", result.capture_id));
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(File::open(levels_path).unwrap())
@@ -986,5 +1067,12 @@ mod tests {
             &DataType::Decimal128(38, 18)
         );
         assert!(output.join("dataset-metadata.json").is_file());
+        assert!(
+            output
+                .join("version=2/date=1970-01-01/event_type=best_bid_offers")
+                .join("venue=aster/market=BTC")
+                .join(format!("part-{}-000000.parquet", result.capture_id))
+                .is_file()
+        );
     }
 }

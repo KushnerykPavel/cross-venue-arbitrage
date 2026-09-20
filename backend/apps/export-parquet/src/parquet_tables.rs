@@ -36,6 +36,21 @@ pub struct OrderBookEventRow {
     pub ask_count: u32,
 }
 
+pub struct BestBidOfferRow {
+    pub capture_id: String,
+    pub sequence: u64,
+    pub venue: String,
+    pub market: String,
+    pub local_receive: u64,
+    pub processing_completion: u64,
+    pub bid_price: Option<i128>,
+    pub bid_quantity: Option<i128>,
+    pub bid_order_count: Option<u32>,
+    pub ask_price: Option<i128>,
+    pub ask_quantity: Option<i128>,
+    pub ask_order_count: Option<u32>,
+}
+
 pub struct OrderBookLevelRow {
     pub capture_id: String,
     pub sequence: u64,
@@ -193,6 +208,44 @@ pub fn write_order_book_events(
             optional_u64s(rows.iter().map(|row| row.source_sequence)),
             u32s(rows.iter().map(|row| row.bid_count)),
             u32s(rows.iter().map(|row| row.ask_count)),
+        ],
+    )
+}
+
+pub fn write_best_bid_offers(
+    path: &Path,
+    rows: &[BestBidOfferRow],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let schema = Arc::new(Schema::new(vec![
+        string_field("capture_id", false),
+        u64_field("capture_sequence", false),
+        string_field("venue", false),
+        string_field("market_coin", false),
+        u64_field("local_receive_time", false),
+        u64_field("processing_completion_time", false),
+        decimal_field_nullable("best_bid_price"),
+        decimal_field_nullable("best_bid_quantity"),
+        u32_field("best_bid_order_count", true),
+        decimal_field_nullable("best_ask_price"),
+        decimal_field_nullable("best_ask_quantity"),
+        u32_field("best_ask_order_count", true),
+    ]));
+    write_batch(
+        path,
+        schema,
+        vec![
+            strings(rows.iter().map(|row| row.capture_id.as_str())),
+            u64s(rows.iter().map(|row| row.sequence)),
+            strings(rows.iter().map(|row| row.venue.as_str())),
+            strings(rows.iter().map(|row| row.market.as_str())),
+            u64s(rows.iter().map(|row| row.local_receive)),
+            u64s(rows.iter().map(|row| row.processing_completion)),
+            optional_decimals(rows.iter().map(|row| row.bid_price))?,
+            optional_decimals(rows.iter().map(|row| row.bid_quantity))?,
+            optional_u32s(rows.iter().map(|row| row.bid_order_count)),
+            optional_decimals(rows.iter().map(|row| row.ask_price))?,
+            optional_decimals(rows.iter().map(|row| row.ask_quantity))?,
+            optional_u32s(rows.iter().map(|row| row.ask_order_count)),
         ],
     )
 }
@@ -380,6 +433,10 @@ fn decimal_field(name: &str) -> Field {
     Field::new(name, DataType::Decimal128(38, 18), false)
 }
 
+fn decimal_field_nullable(name: &str) -> Field {
+    Field::new(name, DataType::Decimal128(38, 18), true)
+}
+
 fn strings<'a>(values: impl Iterator<Item = &'a str>) -> ArrayRef {
     Arc::new(StringArray::from_iter_values(values))
 }
@@ -407,5 +464,13 @@ fn optional_u32s(values: impl Iterator<Item = Option<u32>>) -> ArrayRef {
 fn decimals(values: impl Iterator<Item = i128>) -> Result<ArrayRef, arrow_schema::ArrowError> {
     Ok(Arc::new(
         Decimal128Array::from_iter_values(values).with_precision_and_scale(38, 18)?,
+    ))
+}
+
+fn optional_decimals(
+    values: impl Iterator<Item = Option<i128>>,
+) -> Result<ArrayRef, arrow_schema::ArrowError> {
+    Ok(Arc::new(
+        Decimal128Array::from_iter(values).with_precision_and_scale(38, 18)?,
     ))
 }

@@ -3,7 +3,7 @@ pub mod normalization;
 pub mod order_book;
 
 pub use event::{
-    AggressorSide, AggressorSideClassification, EventTimestamps, ExchangeTimeKind,
+    AggressorSide, AggressorSideClassification, BestBidOffer, EventTimestamps, ExchangeTimeKind,
     ExchangeTimeObservation, ExchangeTimeUnit, LocalObservationTime, MarketDataUnavailable,
     MarketTrade, MarketTradeIdentity, MarketTradeKind, MarketTradeReportingKind,
     NormalizedMarketEvent, TradeStreamResumed, UnavailabilityCategory,

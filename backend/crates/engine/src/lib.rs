@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 
 use domain::{MarketCoin, Venue};
 use market_data::{
-    AggressorSide, AggressorSideClassification, ExchangeTimeKind, ExchangeTimeUnit,
+    AggressorSide, AggressorSideClassification, BestBidOffer, ExchangeTimeKind, ExchangeTimeUnit,
     MarketTradeIdentity, MarketTradeKind, MarketTradeReportingKind, NormalizedMarketEvent,
     OrderBook, OrderBookSnapshot, OrderBookStatus, UnavailabilityCategory,
 };
@@ -16,6 +16,29 @@ pub struct MarketDataEngine {
     events_processed: u64,
     digest: Sha256,
     order_books: HashMap<(Venue, MarketCoin), OrderBook>,
+    best_bid_offers: HashMap<(Venue, MarketCoin), BestBidOfferState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BestBidOfferStatus {
+    AwaitingFirstUpdate,
+    Available,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BestBidOfferReport {
+    pub venue: Venue,
+    pub market_coin: MarketCoin,
+    pub status: BestBidOfferStatus,
+    pub best_bid: Option<String>,
+    pub best_ask: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct BestBidOfferState {
+    value: Option<BestBidOffer>,
+    status: BestBidOfferStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +47,7 @@ pub struct EngineReport {
     pub last_capture_sequence: Option<u64>,
     pub event_digest_sha256: String,
     pub order_books: Vec<OrderBookReport>,
+    pub best_bid_offers: Vec<BestBidOfferReport>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +79,7 @@ impl MarketDataEngine {
             events_processed: 0,
             digest: Sha256::new(),
             order_books: HashMap::new(),
+            best_bid_offers: HashMap::new(),
         }
     }
 
@@ -78,6 +103,18 @@ impl MarketDataEngine {
                     .or_insert_with(|| OrderBook::new(snapshot.venue(), snapshot.symbol().clone()))
                     .replace(snapshot.clone())
                     .expect("Order Book key is derived from the snapshot identity");
+                self.reconcile_bbo(snapshot.venue(), snapshot.symbol().market_coin());
+            }
+            NormalizedMarketEvent::BestBidOfferUpdated(bbo) => {
+                let key = (bbo.venue(), bbo.symbol().market_coin().clone());
+                let status = self.bbo_status(bbo);
+                self.best_bid_offers.insert(
+                    key,
+                    BestBidOfferState {
+                        value: Some(bbo.clone()),
+                        status,
+                    },
+                );
             }
             NormalizedMarketEvent::OrderBookUnavailable(unavailable) => {
                 let key = (unavailable.venue(), unavailable.market_coin().clone());
@@ -123,6 +160,28 @@ impl MarketDataEngine {
                 .cmp(&venue_rank(right.venue))
                 .then_with(|| left.market_coin.cmp(&right.market_coin))
         });
+        let mut best_bid_offers = self
+            .best_bid_offers
+            .iter()
+            .map(|((venue, market_coin), state)| BestBidOfferReport {
+                venue: *venue,
+                market_coin: market_coin.clone(),
+                status: state.status,
+                best_bid: state
+                    .value
+                    .as_ref()
+                    .and_then(|bbo| bbo.bid().map(|level| level.price().to_string())),
+                best_ask: state
+                    .value
+                    .as_ref()
+                    .and_then(|bbo| bbo.ask().map(|level| level.price().to_string())),
+            })
+            .collect::<Vec<_>>();
+        best_bid_offers.sort_by(|left, right| {
+            venue_rank(left.venue)
+                .cmp(&venue_rank(right.venue))
+                .then_with(|| left.market_coin.cmp(&right.market_coin))
+        });
         EngineReport {
             events_processed: self.events_processed,
             last_capture_sequence: self
@@ -131,7 +190,55 @@ impl MarketDataEngine {
                 .filter(|_| self.events_processed > 0),
             event_digest_sha256: encode_hex(&self.digest.clone().finalize()),
             order_books,
+            best_bid_offers,
         }
+    }
+
+    fn bbo_status(&self, bbo: &BestBidOffer) -> BestBidOfferStatus {
+        let Some(book) = self
+            .order_books
+            .get(&(bbo.venue(), bbo.symbol().market_coin().clone()))
+        else {
+            return BestBidOfferStatus::Unknown;
+        };
+        let Some(snapshot) = book.current() else {
+            return BestBidOfferStatus::Unknown;
+        };
+        if snapshot
+            .timestamps()
+            .local_receive()
+            .nanos_since_start()
+            .abs_diff(bbo.timestamps().local_receive().nanos_since_start())
+            > 500_000_000
+        {
+            return BestBidOfferStatus::Unknown;
+        }
+        let bid_matches = bbo
+            .bid()
+            .zip(snapshot.bids().first())
+            .map_or(false, |(a, b)| a == b);
+        let ask_matches = bbo
+            .ask()
+            .zip(snapshot.asks().first())
+            .map_or(false, |(a, b)| a == b);
+        if bid_matches && ask_matches {
+            BestBidOfferStatus::Available
+        } else {
+            BestBidOfferStatus::Unknown
+        }
+    }
+
+    fn reconcile_bbo(&mut self, venue: Venue, market_coin: &MarketCoin) {
+        let key = (venue, market_coin.clone());
+        let status = self
+            .best_bid_offers
+            .get(&key)
+            .and_then(|state| state.value.as_ref())
+            .map_or(BestBidOfferStatus::Unknown, |bbo| self.bbo_status(bbo));
+        let Some(state) = self.best_bid_offers.get_mut(&key) else {
+            return;
+        };
+        state.status = status;
     }
 }
 
@@ -166,6 +273,12 @@ fn hash_event(hasher: &mut Sha256, sequence: u64, event: &NormalizedMarketEvent)
                     level.order_count().map(|value| u64::from(value.get())),
                 );
             }
+        }
+        NormalizedMarketEvent::BestBidOfferUpdated(bbo) => {
+            hash_u8(hasher, 5);
+            hash_timestamps(hasher, bbo.timestamps());
+            hash_optional_book_level(hasher, bbo.bid());
+            hash_optional_book_level(hasher, bbo.ask());
         }
         NormalizedMarketEvent::OrderBookUnavailable(event) => {
             hash_u8(hasher, 1);
@@ -256,6 +369,23 @@ fn hash_event(hasher: &mut Sha256, sequence: u64, event: &NormalizedMarketEvent)
             hash_u8(hasher, 4);
             hash_u64(hasher, event.observed_at().nanos_since_start());
         }
+    }
+}
+
+fn hash_optional_book_level(hasher: &mut Sha256, level: Option<&market_data::BookLevel>) {
+    match level {
+        Some(level) => {
+            hash_u8(hasher, 1);
+            hash_i128(hasher, level.price().coefficient());
+            hash_u8(hasher, level.price().scale());
+            hash_i128(hasher, level.quantity().coefficient());
+            hash_u8(hasher, level.quantity().scale());
+            hash_optional_u64(
+                hasher,
+                level.order_count().map(|count| u64::from(count.get())),
+            );
+        }
+        None => hash_u8(hasher, 0),
     }
 }
 
@@ -361,8 +491,12 @@ impl Error for EngineError {}
 
 #[cfg(test)]
 mod tests {
-    use domain::MarketCoin;
-    use market_data::{LocalObservationTime, TradeStreamResumed};
+    use std::str::FromStr;
+
+    use domain::{MarketCoin, Price, Quantity, Symbol};
+    use market_data::{
+        BookLevel, EventTimestamps, LocalObservationTime, OrderBookSnapshot, TradeStreamResumed,
+    };
 
     use super::*;
 
@@ -401,5 +535,96 @@ mod tests {
             }
         );
         assert_eq!(engine.report().events_processed, 0);
+    }
+
+    fn bbo_fixture(receive_time: u64, bid_price: &str) -> BestBidOffer {
+        let coin = MarketCoin::try_new("BTC").unwrap();
+        BestBidOffer::new(
+            Venue::Hyperliquid,
+            Symbol::perpetual(coin),
+            EventTimestamps::new(
+                Vec::new(),
+                LocalObservationTime::from_nanos_since_start(receive_time),
+                LocalObservationTime::from_nanos_since_start(receive_time),
+            ),
+            Some(BookLevel::new(
+                Price::from_str(bid_price).unwrap(),
+                Quantity::from_str("1").unwrap(),
+                None,
+            )),
+            Some(BookLevel::new(
+                Price::from_str("101").unwrap(),
+                Quantity::from_str("2").unwrap(),
+                None,
+            )),
+        )
+    }
+
+    fn snapshot_fixture(receive_time: u64) -> OrderBookSnapshot {
+        let coin = MarketCoin::try_new("BTC").unwrap();
+        OrderBookSnapshot::try_new(
+            Venue::Hyperliquid,
+            Symbol::perpetual(coin),
+            None,
+            EventTimestamps::new(
+                Vec::new(),
+                LocalObservationTime::from_nanos_since_start(receive_time),
+                LocalObservationTime::from_nanos_since_start(receive_time),
+            ),
+            vec![BookLevel::new(
+                Price::from_str("100").unwrap(),
+                Quantity::from_str("1").unwrap(),
+                None,
+            )],
+            vec![BookLevel::new(
+                Price::from_str("101").unwrap(),
+                Quantity::from_str("2").unwrap(),
+                None,
+            )],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn bbo_is_available_only_when_fresh_and_exactly_matches_l2_top() {
+        let mut engine = MarketDataEngine::new();
+        engine
+            .process(
+                1,
+                &NormalizedMarketEvent::OrderBookSnapshot(snapshot_fixture(100)),
+            )
+            .unwrap();
+        engine
+            .process(
+                2,
+                &NormalizedMarketEvent::BestBidOfferUpdated(bbo_fixture(200, "100")),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.report().best_bid_offers[0].status,
+            BestBidOfferStatus::Available
+        );
+
+        engine
+            .process(
+                3,
+                &NormalizedMarketEvent::BestBidOfferUpdated(bbo_fixture(300, "102")),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.report().best_bid_offers[0].status,
+            BestBidOfferStatus::Unknown
+        );
+
+        engine
+            .process(
+                4,
+                &NormalizedMarketEvent::BestBidOfferUpdated(bbo_fixture(500_000_101, "100")),
+            )
+            .unwrap();
+        assert_eq!(
+            engine.report().best_bid_offers[0].status,
+            BestBidOfferStatus::Unknown
+        );
     }
 }

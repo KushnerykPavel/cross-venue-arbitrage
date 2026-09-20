@@ -81,6 +81,7 @@ The normalized event variants are:
 
 ```text
 OrderBookSnapshot
+BestBidOfferUpdated
 OrderBookUnavailable
 MarketTrade
 TradeStreamUnavailable
@@ -91,6 +92,13 @@ Every accepted L2 update produces a complete `OrderBookSnapshot`. Hyperliquid
 and Aster inputs are naturally complete snapshots. Lighter remains
 venue-incremental internally but publishes the complete reconstructed state
 after every accepted update.
+
+Hyperliquid also publishes `BestBidOfferUpdated` from its independent `bbo`
+subscription. BBO is a separate state stream: it does not replace or mutate
+`OrderBookSnapshot`, and its bid/ask sides may be null. The engine marks BBO
+`Available` only when both sides exactly match the most recent L2 top level and
+their Local Receive Times are within 500 ms. Otherwise it preserves the event
+but reports `Unknown`; the full L2 book is not invalidated.
 
 `OrderBookUnavailable` has a stable category and diagnostic detail:
 
@@ -376,6 +384,8 @@ The immutable tables are:
 
 - `captures` for metadata and quality counters;
 - `order_book_events` with one row per snapshot;
+- `best_bid_offers` with one row per BBO event and nullable exact bid/ask
+  columns;
 - `order_book_levels` with one row per bid or ask level;
 - `market_trades` with one row per Market Trade;
 - `availability_events` for Order Book and Trade Stream transitions;
@@ -386,11 +396,11 @@ Quantity columns use exact `DECIMAL(38,18)`. Conversion pads scale with zeros
 without rounding; overflow or any inexact value fails the export. No canonical
 or analytical monetary column uses `DOUBLE`.
 
-The initial partition layout is:
+New datasets use schema version 2 and the following partition layout:
 
 ```text
 parquet/
-  version=1/
+  version=2/
     date=YYYY-MM-DD/
       event_type=<type>/
         venue=<venue>/
@@ -401,7 +411,9 @@ parquet/
 Every row retains `capture_id`; Capture Run is not a partition key. Dataset
 metadata records source Capture IDs, source manifest SHA-256 values, converter
 schema version, converter Git commit, and UTC conversion time. Conversion
-always creates a new dataset and never modifies canonical captures.
+always creates a new dataset and never modifies canonical captures. Existing
+version 1 datasets remain immutable and readable; only newly exported datasets
+use version 2 and include `best_bid_offers`.
 
 ## MVP limits and acceptance
 

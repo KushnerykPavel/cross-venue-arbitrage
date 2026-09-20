@@ -357,6 +357,14 @@ fn present_market_data(capture_sequence: u64, event: NormalizedMarketEvent) {
             snapshot.symbol().market_coin(),
             &snapshot,
         ),
+        NormalizedMarketEvent::BestBidOfferUpdated(bbo) => println!(
+            "capture_sequence={} {} {} BBO bid={:?} ask={:?}",
+            capture_sequence,
+            bbo.venue(),
+            bbo.symbol().market_coin(),
+            bbo.bid().map(|level| (level.price(), level.quantity())),
+            bbo.ask().map(|level| (level.price(), level.quantity())),
+        ),
         NormalizedMarketEvent::OrderBookUnavailable(event) => eprintln!(
             "capture_sequence={} {} {} Order Book unavailable ({:?}): {}",
             capture_sequence,

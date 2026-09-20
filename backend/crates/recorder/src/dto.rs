@@ -6,10 +6,11 @@ use std::str::FromStr;
 
 use domain::{MarketCoin, Price, Quantity, Symbol, Venue};
 use market_data::{
-    AggressorSide, AggressorSideClassification, BookLevel, EventTimestamps, ExchangeTimeKind,
-    ExchangeTimeObservation, ExchangeTimeUnit, LocalObservationTime, MarketDataUnavailable,
-    MarketTrade, MarketTradeIdentity, MarketTradeKind, MarketTradeReportingKind,
-    NormalizedMarketEvent, OrderBookSnapshot, TradeStreamResumed, UnavailabilityCategory,
+    AggressorSide, AggressorSideClassification, BestBidOffer, BookLevel, EventTimestamps,
+    ExchangeTimeKind, ExchangeTimeObservation, ExchangeTimeUnit, LocalObservationTime,
+    MarketDataUnavailable, MarketTrade, MarketTradeIdentity, MarketTradeKind,
+    MarketTradeReportingKind, NormalizedMarketEvent, OrderBookSnapshot, TradeStreamResumed,
+    UnavailabilityCategory,
 };
 use serde::{Deserialize, Serialize};
 
@@ -99,6 +100,10 @@ pub enum StoredPayloadV1 {
         diagnostic: String,
     },
     TradeStreamResumed,
+    BestBidOfferUpdated {
+        bid: Option<StoredBookLevelV1>,
+        ask: Option<StoredBookLevelV1>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -220,6 +225,7 @@ impl StoredEventV1 {
                 .capacity()
                 .saturating_add(asks.capacity())
                 .saturating_mul(std::mem::size_of::<StoredBookLevelV1>()),
+            StoredPayloadV1::BestBidOfferUpdated { .. } => 0,
             StoredPayloadV1::OrderBookUnavailable { diagnostic, .. }
             | StoredPayloadV1::TradeStreamUnavailable { diagnostic, .. } => diagnostic.capacity(),
             StoredPayloadV1::MarketTrade { .. } | StoredPayloadV1::TradeStreamResumed => 0,
@@ -263,6 +269,24 @@ impl StoredEventV1 {
                             .copied()
                             .map(StoredBookLevelV1::from)
                             .collect(),
+                    },
+                })
+            }
+            NormalizedMarketEvent::BestBidOfferUpdated(bbo) => {
+                let timestamps = bbo.timestamps();
+                Ok(Self {
+                    capture_sequence,
+                    venue,
+                    market_coin,
+                    local_receive_time: timestamps.local_receive().nanos_since_start(),
+                    processing_completion_time: timestamps
+                        .processing_completed()
+                        .nanos_since_start(),
+                    exchange_times: stored_exchange_times(timestamps),
+                    source_id: None,
+                    payload: StoredPayloadV1::BestBidOfferUpdated {
+                        bid: bbo.bid().copied().map(StoredBookLevelV1::from),
+                        ask: bbo.ask().copied().map(StoredBookLevelV1::from),
                     },
                 })
             }
@@ -344,6 +368,15 @@ impl StoredEventV1 {
                 .map_err(|_| StorageConversionError::InvalidOrderBook)?;
                 Ok(NormalizedMarketEvent::OrderBookSnapshot(snapshot))
             }
+            StoredPayloadV1::BestBidOfferUpdated { bid, ask } => Ok(
+                NormalizedMarketEvent::BestBidOfferUpdated(BestBidOffer::new(
+                    venue,
+                    Symbol::perpetual(market_coin),
+                    timestamps,
+                    bid.as_ref().map(stored_book_level).transpose()?,
+                    ask.as_ref().map(stored_book_level).transpose()?,
+                )),
+            ),
             StoredPayloadV1::OrderBookUnavailable {
                 category,
                 diagnostic,

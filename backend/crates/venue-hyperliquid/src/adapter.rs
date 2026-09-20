@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use domain::{DecimalParseError, MarketCoin, Price, Quantity, Symbol, Venue};
 use market_data::{
-    BookLevel, EventTimestamps, ExchangeTimeKind, ExchangeTimeObservation, ExchangeTimeUnit,
-    LocalObservationTime, MarketDataUnavailable, NormalizedMarketEvent, OrderBook,
-    OrderBookIdentityError, OrderBookSnapshot, SnapshotValidationError, TradeStreamResumed,
-    UnavailabilityCategory,
+    BestBidOffer, BookLevel, EventTimestamps, ExchangeTimeKind, ExchangeTimeObservation,
+    ExchangeTimeUnit, LocalObservationTime, MarketDataUnavailable, NormalizedMarketEvent,
+    OrderBook, OrderBookIdentityError, OrderBookSnapshot, SnapshotValidationError,
+    TradeStreamResumed, UnavailabilityCategory,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -67,6 +67,7 @@ impl MarketDataAdapter for HyperliquidAdapter {
                 let key = MarketKey::new(index);
                 [
                     AdapterAction::SendText(market.subscription_message()),
+                    AdapterAction::SendText(market.bbo_subscription_message()),
                     AdapterAction::SendText(market.trade_subscription_message()),
                     AdapterAction::MarketSubscribed(key),
                 ]
@@ -144,6 +145,26 @@ impl MarketDataAdapter for HyperliquidAdapter {
                 }
             }
             return actions;
+        }
+        if envelope.channel == "bbo" {
+            let Ok(bbo) = serde_json::from_value::<WireBbo>(envelope.data) else {
+                return Vec::new();
+            };
+            let Some(index) = self
+                .markets
+                .iter()
+                .position(|market| market.market_coin().as_str() == bbo.coin)
+            else {
+                return Vec::new();
+            };
+            match decode_bbo(bbo, &self.markets[index].market_coin, local_receive) {
+                Ok(bbo) => {
+                    return vec![AdapterAction::Publish(
+                        NormalizedMarketEvent::BestBidOfferUpdated(bbo),
+                    )];
+                }
+                Err(_) => return Vec::new(),
+            }
         }
         if envelope.channel != "l2Book" {
             return Vec::new();
@@ -241,7 +262,11 @@ impl MarketOrderBook {
     }
 
     fn subscription_message(&self) -> String {
-        serde_json::json!({"method":"subscribe","subscription":{"type":"l2Book","coin":self.market_coin.as_str(),"fast":false}}).to_string()
+        serde_json::json!({"method":"subscribe","subscription":{"type":"l2Book","coin":self.market_coin.as_str()}}).to_string()
+    }
+
+    fn bbo_subscription_message(&self) -> String {
+        serde_json::json!({"method":"subscribe","subscription":{"type":"bbo","coin":self.market_coin.as_str()}}).to_string()
     }
 
     fn trade_subscription_message(&self) -> String {
@@ -372,10 +397,52 @@ struct WireBook {
 }
 
 #[derive(Deserialize)]
+struct WireBbo {
+    coin: String,
+    bbo: [Option<WireLevel>; 2],
+    time: u64,
+}
+
+#[derive(Deserialize)]
 struct WireLevel {
     px: String,
     sz: String,
     n: u32,
+}
+
+fn decode_bbo(
+    wire_bbo: WireBbo,
+    expected_coin: &MarketCoin,
+    local_receive: LocalObservationTime,
+) -> Result<BestBidOffer, AdapterError> {
+    if wire_bbo.coin != expected_coin.as_str() {
+        return Err(AdapterError::UnexpectedCoin {
+            expected: expected_coin.clone(),
+            actual: wire_bbo.coin,
+        });
+    }
+    let [bid, ask] = wire_bbo.bbo;
+    let bid = bid
+        .map(|level| decode_level(level, BookSide::Bid, 0))
+        .transpose()?;
+    let ask = ask
+        .map(|level| decode_level(level, BookSide::Ask, 0))
+        .transpose()?;
+    Ok(BestBidOffer::new(
+        Venue::Hyperliquid,
+        Symbol::perpetual(expected_coin.clone()),
+        EventTimestamps::new(
+            vec![ExchangeTimeObservation::new(
+                ExchangeTimeKind::EventTime,
+                wire_bbo.time,
+                ExchangeTimeUnit::Unknown,
+            )],
+            local_receive,
+            local_receive,
+        ),
+        bid,
+        ask,
+    ))
 }
 
 fn decode_snapshot(
@@ -442,6 +509,23 @@ fn decode_levels(
             Ok(BookLevel::new(price, quantity, Some(order_count)))
         })
         .collect()
+}
+
+fn decode_level(wire: WireLevel, side: BookSide, level: usize) -> Result<BookLevel, AdapterError> {
+    let price = Price::from_str(&wire.px).map_err(|source| AdapterError::InvalidPrice {
+        side,
+        level,
+        source,
+    })?;
+    let quantity =
+        Quantity::from_str(&wire.sz).map_err(|source| AdapterError::InvalidQuantity {
+            side,
+            level,
+            source,
+        })?;
+    let order_count =
+        NonZeroU32::new(wire.n).ok_or(AdapterError::ZeroOrderCount { side, level })?;
+    Ok(BookLevel::new(price, quantity, Some(order_count)))
 }
 
 impl Display for AdapterError {
@@ -516,6 +600,7 @@ mod tests {
     use std::cell::Cell;
 
     const SNAPSHOT: &str = r#"{"channel":"l2Book","data":{"coin":"BTC","time":10,"levels":[[{"px":"100","sz":"1","n":2}],[{"px":"101","sz":"2","n":1}]]}}"#;
+    const BBO: &str = r#"{"channel":"bbo","data":{"coin":"BTC","time":11,"bbo":[{"px":"100","sz":"1","n":2},{"px":"101","sz":"2","n":1}]}}"#;
     const TRADES: &str = r#"{"channel":"trades","data":[{"coin":"BTC","side":"B","px":"100","sz":"1","hash":"0x1","time":10,"tid":1},{"coin":"BTC","side":"A","px":"101","sz":"2","hash":"0x2","time":11,"tid":2}]}"#;
 
     struct Clock(Cell<u64>);
@@ -542,6 +627,7 @@ mod tests {
         };
         let value: Value = serde_json::from_str(message).unwrap();
         assert_eq!(value["subscription"]["coin"], "BTC");
+        assert!(value["subscription"].get("fast").is_none());
         let actions = adapter.on_text(
             SNAPSHOT,
             LocalObservationTime::from_nanos_since_start(1),
@@ -563,6 +649,45 @@ mod tests {
             2
         );
         assert!(adapter.markets[1].book().current().is_none());
+    }
+
+    #[test]
+    fn decodes_bbo_as_an_independent_normalized_event() {
+        let mut adapter = HyperliquidAdapter::new(
+            vec![MarketCoin::try_new("BTC").unwrap()],
+            NonZeroUsize::new(10).unwrap(),
+        );
+        let actions = adapter.on_text(
+            BBO,
+            LocalObservationTime::from_nanos_since_start(42),
+            &Clock(Cell::new(42)),
+        );
+        let AdapterAction::Publish(NormalizedMarketEvent::BestBidOfferUpdated(bbo)) = &actions[0]
+        else {
+            panic!("expected normalized BBO event")
+        };
+        assert_eq!(bbo.bid().unwrap().price().to_string(), "100");
+        assert_eq!(bbo.ask().unwrap().quantity().to_string(), "2");
+        assert_eq!(bbo.timestamps().local_receive().nanos_since_start(), 42);
+    }
+
+    #[test]
+    fn decodes_one_sided_bbo_without_fabricating_the_missing_side() {
+        let mut adapter = HyperliquidAdapter::new(
+            vec![MarketCoin::try_new("BTC").unwrap()],
+            NonZeroUsize::new(10).unwrap(),
+        );
+        let actions = adapter.on_text(
+            &BBO.replace(r#"{"px":"100","sz":"1","n":2}"#, "null"),
+            LocalObservationTime::from_nanos_since_start(42),
+            &Clock(Cell::new(42)),
+        );
+        let AdapterAction::Publish(NormalizedMarketEvent::BestBidOfferUpdated(bbo)) = &actions[0]
+        else {
+            panic!("expected normalized BBO event")
+        };
+        assert!(bbo.bid().is_none());
+        assert!(bbo.ask().is_some());
     }
 
     #[test]
