@@ -13,6 +13,7 @@ pub(crate) enum IncomingFrame {
 pub(crate) enum OutgoingFrame {
     Text(String),
     Pong(Vec<u8>),
+    Ping(Vec<u8>),
 }
 
 #[allow(async_fn_in_trait)]
@@ -65,6 +66,7 @@ impl TransportConnection for TungsteniteConnection {
         let message = match frame {
             OutgoingFrame::Text(text) => Message::Text(text.into()),
             OutgoingFrame::Pong(payload) => Message::Pong(payload.into()),
+            OutgoingFrame::Ping(payload) => Message::Ping(payload.into()),
         };
         self.0
             .send(message)

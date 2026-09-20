@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
+use std::time::Duration;
 
 use domain::{DecimalParseError, MarketCoin, Price, Quantity, Symbol, Venue};
 use market_data::{
@@ -22,6 +23,7 @@ use crate::trade::{WireTrade, decode_trade};
 
 const LIGHTER_WS_URL: &str = "wss://mainnet.zklighter.elliot.ai/stream";
 const PONG: &str = r#"{"type":"pong"}"#;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
 pub struct LighterAdapter {
@@ -68,6 +70,14 @@ impl MarketDataAdapter for LighterAdapter {
 
     fn endpoint(&self) -> &str {
         LIGHTER_WS_URL
+    }
+
+    fn heartbeat_interval(&self) -> Option<Duration> {
+        Some(HEARTBEAT_INTERVAL)
+    }
+
+    fn on_heartbeat(&mut self) -> Vec<AdapterAction> {
+        vec![AdapterAction::SendPing(Vec::new())]
     }
 
     fn on_connected(&mut self) -> Vec<AdapterAction> {
@@ -799,6 +809,7 @@ struct WireLevel {
 mod tests {
     use std::cell::Cell;
     use std::num::NonZeroUsize;
+    use std::time::Duration;
 
     use domain::MarketCoin;
     use market_data::{LocalObservationTime, NormalizedMarketEvent, OrderBookStatus};
@@ -933,6 +944,17 @@ mod tests {
             ] if *subscribed == MarketKey::new(0)
         ));
         assert!(adapter.markets[1].book().current().is_none());
+    }
+
+    #[test]
+    fn sends_standard_websocket_heartbeat() {
+        let mut adapter = whole_adapter();
+
+        assert_eq!(adapter.heartbeat_interval(), Some(Duration::from_secs(15)));
+        assert_eq!(
+            adapter.on_heartbeat(),
+            vec![AdapterAction::SendPing(Vec::new())]
+        );
     }
 
     #[test]

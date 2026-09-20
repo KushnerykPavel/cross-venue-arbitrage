@@ -32,6 +32,7 @@ impl MarketKey {
 #[derive(Debug, Eq, PartialEq)]
 pub enum AdapterAction {
     SendText(String),
+    SendPing(Vec<u8>),
     MarketSubscribed(MarketKey),
     TradeDeduplicated(MarketKey),
     Publish(NormalizedMarketEvent),
@@ -322,6 +323,13 @@ where
         match action {
             AdapterAction::SendText(text) => {
                 if let Err(error) = connection.send(OutgoingFrame::Text(text)).await {
+                    return ActionOutcome::TransportFailure(format!(
+                        "transport send failed: {error}"
+                    ));
+                }
+            }
+            AdapterAction::SendPing(payload) => {
+                if let Err(error) = connection.send(OutgoingFrame::Ping(payload)).await {
                     return ActionOutcome::TransportFailure(format!(
                         "transport send failed: {error}"
                     ));
