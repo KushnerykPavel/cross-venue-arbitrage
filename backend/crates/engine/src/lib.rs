@@ -337,6 +337,16 @@ fn hash_event(hasher: &mut Sha256, sequence: u64, event: &NormalizedMarketEvent)
                     hash_u64(hasher, *first_trade_id);
                     hash_u64(hasher, *last_trade_id);
                 }
+                MarketTradeIdentity::Binance {
+                    aggregate_trade_id,
+                    first_trade_id,
+                    last_trade_id,
+                } => {
+                    hash_u8(hasher, 3);
+                    hash_u64(hasher, *aggregate_trade_id);
+                    hash_u64(hasher, *first_trade_id);
+                    hash_u64(hasher, *last_trade_id);
+                }
                 MarketTradeIdentity::Hyperliquid {
                     block_time,
                     trade_id,
@@ -425,6 +435,7 @@ fn venue_rank(venue: Venue) -> u8 {
         Venue::Aster => 0,
         Venue::Hyperliquid => 1,
         Venue::Lighter => 2,
+        Venue::Binance => 3,
     }
 }
 

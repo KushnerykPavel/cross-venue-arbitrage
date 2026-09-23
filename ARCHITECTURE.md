@@ -49,6 +49,7 @@ Internal file layout is not part of the crate interface.
 - `venue-hyperliquid`
 - `venue-lighter`
 - `venue-aster`
+- `venue-binance`
 
 Each venue crate exposes one whole-market adapter. It owns routing,
 normalization, recovery commands, an independent Order Book, and bounded trade
@@ -89,8 +90,8 @@ engine. Replay validates the complete capture before delivering those same
 events to the same engine entry point in Capture Sequence order.
 
 The MVP records full accepted L2 snapshots, public Market Trades, and Order
-Book and Trade Stream availability for BTC perpetual on Aster, Hyperliquid, and
-Lighter. Parquet is an immutable offline derivative for DuckDB and Polars, not
+Book and Trade Stream availability for BTC perpetual on Binance, Aster,
+Hyperliquid, and Lighter. Parquet is an immutable offline derivative for DuckDB and Polars, not
 the replay source of truth. The exact contract, ownership, failure behavior,
 filesystem format, and acceptance criteria are specified in
 [the reproducible market-data pipeline design](docs/design/reproducible-market-data-pipeline.md).
@@ -120,6 +121,9 @@ resolved in [ADR 0004](docs/adr/0004-lighter-order-book-session.md).
 Aster Futures market resolution, partial-depth snapshot semantics, and session
 ownership are resolved in
 [ADR 0005](docs/adr/0005-aster-partial-depth-session.md).
+Binance Futures market resolution, top-20 partial-depth semantics, and session
+ownership are resolved in
+[ADR 0009](docs/adr/0009-binance-futures-partial-depth-session.md).
 The single shared Configured Market Set for every live venue is defined in
 [ADR 0006](docs/adr/0006-shared-market-configuration.md).
 The common live runtime, deterministic whole-market adapter boundary, shared

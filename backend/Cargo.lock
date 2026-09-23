@@ -1796,6 +1796,7 @@ dependencies = [
  "tokio",
  "venue",
  "venue-aster",
+ "venue-binance",
  "venue-hyperliquid",
  "venue-lighter",
 ]
@@ -1899,6 +1900,18 @@ dependencies = [
 
 [[package]]
 name = "venue-aster"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "market-data",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "venue",
+]
+
+[[package]]
+name = "venue-binance"
 version = "0.1.0"
 dependencies = [
  "domain",

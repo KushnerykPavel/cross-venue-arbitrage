@@ -300,6 +300,15 @@ fn export_into(
                                 row.first_trade_id = Some(*first_trade_id);
                                 row.last_trade_id = Some(*last_trade_id);
                             }
+                            MarketTradeIdentity::Binance {
+                                aggregate_trade_id,
+                                first_trade_id,
+                                last_trade_id,
+                            } => {
+                                row.aggregate_trade_id = Some(*aggregate_trade_id);
+                                row.first_trade_id = Some(*first_trade_id);
+                                row.last_trade_id = Some(*last_trade_id);
+                            }
                             MarketTradeIdentity::Hyperliquid {
                                 block_time,
                                 trade_id,
@@ -831,6 +840,7 @@ fn safe_partition_value(value: &str) -> String {
 fn venue_name(venue: Venue) -> &'static str {
     match venue {
         Venue::Aster => "aster",
+        Venue::Binance => "binance",
         Venue::Hyperliquid => "hyperliquid",
         Venue::Lighter => "lighter",
     }

@@ -14,7 +14,7 @@ one run, venue timestamps do not define a cross-venue order, and the three
 venues have different Order Book and public-trade semantics.
 
 The first dataset must remain small enough to inspect and explain. It targets a
-thirty-minute BTC perpetual capture from Aster, Hyperliquid, and Lighter on the
+thirty-minute BTC perpetual capture from Binance, Aster, Hyperliquid, and Lighter on the
 existing VPS. Raw WebSocket frames, compression, automatic retention, funding,
 and private execution data are excluded from this MVP.
 

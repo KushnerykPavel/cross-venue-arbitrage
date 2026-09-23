@@ -15,6 +15,7 @@ members = [
     "crates/strategy",
     "crates/venue",
     "crates/venue-aster",
+    "crates/venue-binance",
     "crates/venue-hyperliquid",
     "crates/venue-lighter",
 ]

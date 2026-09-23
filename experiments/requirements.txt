@@ -1,0 +1,4 @@
+jupyterlab
+matplotlib
+polars[all]
+pytest

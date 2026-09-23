@@ -31,6 +31,7 @@ pub enum StoredVenueV1 {
     Aster,
     Hyperliquid,
     Lighter,
+    Binance,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,6 +75,11 @@ pub enum StoredSourceIdV1 {
         market_id: u32,
         trade_id_string: String,
         message_nonce: Option<u64>,
+    },
+    BinanceTrade {
+        aggregate_trade_id: u64,
+        first_trade_id: u64,
+        last_trade_id: u64,
     },
 }
 
@@ -503,6 +509,18 @@ fn stored_trade_identity(
             transaction_hash: transaction_hash.clone(),
         }),
         (
+            Venue::Binance,
+            StoredSourceIdV1::BinanceTrade {
+                aggregate_trade_id,
+                first_trade_id,
+                last_trade_id,
+            },
+        ) => Ok(MarketTradeIdentity::Binance {
+            aggregate_trade_id: *aggregate_trade_id,
+            first_trade_id: *first_trade_id,
+            last_trade_id: *last_trade_id,
+        }),
+        (
             Venue::Lighter,
             StoredSourceIdV1::LighterTrade {
                 market_id,
@@ -542,6 +560,15 @@ fn stored_trade(
             block_time: *block_time,
             trade_id: *trade_id,
             transaction_hash: transaction_hash.clone(),
+        },
+        MarketTradeIdentity::Binance {
+            aggregate_trade_id,
+            first_trade_id,
+            last_trade_id,
+        } if trade.venue() == Venue::Binance => StoredSourceIdV1::BinanceTrade {
+            aggregate_trade_id: *aggregate_trade_id,
+            first_trade_id: *first_trade_id,
+            last_trade_id: *last_trade_id,
         },
         MarketTradeIdentity::Lighter {
             market_id,
@@ -593,6 +620,7 @@ impl From<Venue> for StoredVenueV1 {
     fn from(value: Venue) -> Self {
         match value {
             Venue::Aster => Self::Aster,
+            Venue::Binance => Self::Binance,
             Venue::Hyperliquid => Self::Hyperliquid,
             Venue::Lighter => Self::Lighter,
         }
@@ -603,6 +631,7 @@ impl From<StoredVenueV1> for Venue {
     fn from(value: StoredVenueV1) -> Self {
         match value {
             StoredVenueV1::Aster => Self::Aster,
+            StoredVenueV1::Binance => Self::Binance,
             StoredVenueV1::Hyperliquid => Self::Hyperliquid,
             StoredVenueV1::Lighter => Self::Lighter,
         }

@@ -27,6 +27,7 @@ Initial venues:
 1.  Aster
 2.  Hyperliquid
 3.  Lighter
+4.  Binance Futures
 
 Initial instrument: **BTC perpetual**.
 

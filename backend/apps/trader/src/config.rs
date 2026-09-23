@@ -9,6 +9,7 @@ use std::time::Duration;
 use domain::{MarketCoin, MarketCoinError};
 
 const MARKET_COINS: &str = "MARKET_COINS";
+const ENABLE_HYPERLIQUID: &str = "ENABLE_HYPERLIQUID";
 const TRADE_DEDUP_CAPACITY: &str = "TRADE_DEDUP_CAPACITY";
 const DATA_DIR: &str = "DATA_DIR";
 const RECORDER_QUEUE_CAPACITY: &str = "RECORDER_QUEUE_CAPACITY";
@@ -19,6 +20,7 @@ const DEFAULT_CAPTURE_DURATION_SECONDS: u64 = 30 * 60;
 
 pub struct TraderConfig {
     pub market_coins: Vec<MarketCoin>,
+    pub enable_hyperliquid: bool,
     pub trade_dedup_capacity: NonZeroUsize,
     pub data_dir: PathBuf,
     pub recorder_queue_capacity: NonZeroUsize,
@@ -35,6 +37,7 @@ impl TraderConfig {
 
         let market_coins =
             env::var(MARKET_COINS).map_err(|_| ConfigError::MissingVariable(MARKET_COINS))?;
+        let enable_hyperliquid = optional_bool(ENABLE_HYPERLIQUID, true)?;
         let trade_dedup_capacity = match env::var(TRADE_DEDUP_CAPACITY) {
             Ok(raw) => parse_positive_usize(TRADE_DEDUP_CAPACITY, &raw)?,
             Err(env::VarError::NotPresent) => NonZeroUsize::new(DEFAULT_TRADE_DEDUP_CAPACITY)
@@ -57,11 +60,28 @@ impl TraderConfig {
             optional_positive_u64(CAPTURE_DURATION_SECONDS, DEFAULT_CAPTURE_DURATION_SECONDS)?;
         Ok(Self {
             market_coins: parse_market_coins(MARKET_COINS, &market_coins)?,
+            enable_hyperliquid,
             trade_dedup_capacity,
             data_dir,
             recorder_queue_capacity,
             capture_duration: Duration::from_secs(capture_duration_seconds),
         })
+    }
+}
+
+fn optional_bool(variable: &'static str, default: bool) -> Result<bool, ConfigError> {
+    match env::var(variable) {
+        Ok(raw) => raw
+            .parse::<bool>()
+            .map_err(|_| ConfigError::InvalidBoolean {
+                variable,
+                value: raw,
+            }),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidBoolean {
+            variable,
+            value: "<non-unicode>".into(),
+        }),
     }
 }
 
@@ -149,6 +169,10 @@ pub enum ConfigError {
         variable: &'static str,
         value: String,
     },
+    InvalidBoolean {
+        variable: &'static str,
+        value: String,
+    },
     DataDirectoryMustBeAbsolute(PathBuf),
 }
 
@@ -176,6 +200,12 @@ impl Display for ConfigError {
                     "{variable} must be a positive integer, received {value:?}"
                 )
             }
+            Self::InvalidBoolean { variable, value } => {
+                write!(
+                    formatter,
+                    "{variable} must be true or false, received {value:?}"
+                )
+            }
             Self::DataDirectoryMustBeAbsolute(path) => write!(
                 formatter,
                 "DATA_DIR must be an absolute path outside the repository, received {:?}",
@@ -193,6 +223,7 @@ impl Error for ConfigError {
             Self::MissingVariable(_)
             | Self::DuplicateCoin { .. }
             | Self::InvalidPositiveInteger { .. }
+            | Self::InvalidBoolean { .. }
             | Self::DataDirectoryMustBeAbsolute(_) => None,
         }
     }

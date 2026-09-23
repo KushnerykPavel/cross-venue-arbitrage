@@ -138,6 +138,11 @@ pub enum MarketTradeIdentity {
         first_trade_id: u64,
         last_trade_id: u64,
     },
+    Binance {
+        aggregate_trade_id: u64,
+        first_trade_id: u64,
+        last_trade_id: u64,
+    },
     Hyperliquid {
         block_time: u64,
         trade_id: u64,

@@ -2,3 +2,9 @@
 /backend/.env
 /frontend/node_modules/
 /frontend/dist/
+**/.DS_Store
+
+# Local market-data exports and Python notebook artifacts
+/experiments/data/
+/experiments/.venv/
+/experiments/**/.ipynb_checkpoints/

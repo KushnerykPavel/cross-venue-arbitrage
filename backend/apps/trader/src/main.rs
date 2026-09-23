@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use venue::{LiveMarketDataSession, LiveSessionEvent, MonotonicClock, ShutdownSignal};
 use venue_aster::AsterAdapter;
+use venue_binance::BinanceAdapter;
 use venue_hyperliquid::HyperliquidAdapter;
 use venue_lighter::LighterAdapter;
 
@@ -36,16 +37,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Configured markets for all venues: {}",
         configured_markets(&config.market_coins)
     );
-    println!("resolving Aster and Lighter market metadata");
+    println!("resolving Binance, Aster, and Lighter market metadata");
 
+    let binance =
+        BinanceAdapter::bootstrap(config.market_coins.clone(), config.trade_dedup_capacity).await?;
     let aster =
         AsterAdapter::bootstrap(config.market_coins.clone(), config.trade_dedup_capacity).await?;
-    let hyperliquid =
-        HyperliquidAdapter::new(config.market_coins.clone(), config.trade_dedup_capacity);
+    let hyperliquid = config
+        .enable_hyperliquid
+        .then(|| HyperliquidAdapter::new(config.market_coins.clone(), config.trade_dedup_capacity));
     let lighter =
         LighterAdapter::bootstrap(config.market_coins.clone(), config.trade_dedup_capacity).await?;
 
-    let metadata = capture_metadata(&config, &aster, &hyperliquid, &lighter);
+    let metadata = capture_metadata(&config, &binance, &aster, hyperliquid.as_ref(), &lighter);
     let capture = CaptureCoordinator::start(
         CaptureSettings {
             data_dir: config.data_dir.clone(),
@@ -64,11 +68,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let engine = Arc::new(Mutex::new(MarketDataEngine::new()));
 
     let clock = MonotonicClock::start();
+    let binance = LiveMarketDataSession::new(binance, clock.clone());
     let aster = LiveMarketDataSession::new(aster, clock.clone());
-    let hyperliquid = LiveMarketDataSession::new(hyperliquid, clock.clone());
-    let lighter = LiveMarketDataSession::new(lighter, clock);
+    let lighter = LiveMarketDataSession::new(lighter, clock.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut sessions = JoinSet::new();
+    spawn_session(
+        &mut sessions,
+        "Binance",
+        binance,
+        shutdown_rx.clone(),
+        Arc::clone(&capture),
+        Arc::clone(&engine),
+    );
     spawn_session(
         &mut sessions,
         "Aster",
@@ -77,14 +89,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::clone(&capture),
         Arc::clone(&engine),
     );
-    spawn_session(
-        &mut sessions,
-        "Hyperliquid",
-        hyperliquid,
-        shutdown_rx.clone(),
-        Arc::clone(&capture),
-        Arc::clone(&engine),
-    );
+    if let Some(hyperliquid) = hyperliquid {
+        let hyperliquid = LiveMarketDataSession::new(hyperliquid, clock.clone());
+        spawn_session(
+            &mut sessions,
+            "Hyperliquid",
+            hyperliquid,
+            shutdown_rx.clone(),
+            Arc::clone(&capture),
+            Arc::clone(&engine),
+        );
+    } else {
+        println!("Hyperliquid connector disabled by ENABLE_HYPERLIQUID=false");
+    }
     spawn_session(
         &mut sessions,
         "Lighter",
@@ -251,8 +268,9 @@ fn configured_markets(coins: &[MarketCoin]) -> String {
 
 fn capture_metadata(
     config: &TraderConfig,
+    binance: &BinanceAdapter,
     aster: &AsterAdapter,
-    hyperliquid: &HyperliquidAdapter,
+    hyperliquid: Option<&HyperliquidAdapter>,
     lighter: &LighterAdapter,
 ) -> CaptureMetadata {
     let mut sanitized_configuration = BTreeMap::new();
@@ -264,6 +282,10 @@ fn capture_metadata(
             .map(MarketCoin::as_str)
             .collect::<Vec<_>>()
             .join(","),
+    );
+    sanitized_configuration.insert(
+        "ENABLE_HYPERLIQUID".into(),
+        config.enable_hyperliquid.to_string(),
     );
     sanitized_configuration.insert(
         "TRADE_DEDUP_CAPACITY".into(),
@@ -280,6 +302,17 @@ fn capture_metadata(
     );
 
     let mut resolved_venue_markets = Vec::new();
+    resolved_venue_markets.extend(
+        binance
+            .resolved_markets()
+            .into_iter()
+            .map(|(coin, symbol)| ResolvedVenueMarket {
+                venue: "binance".into(),
+                market_coin: coin.to_string(),
+                venue_symbol: Some(symbol),
+                venue_market_id: None,
+            }),
+    );
     resolved_venue_markets.extend(aster.resolved_markets().into_iter().map(|(coin, symbol)| {
         ResolvedVenueMarket {
             venue: "aster".into(),
@@ -288,14 +321,16 @@ fn capture_metadata(
             venue_market_id: None,
         }
     }));
-    resolved_venue_markets.extend(hyperliquid.resolved_markets().into_iter().map(|coin| {
-        ResolvedVenueMarket {
-            venue: "hyperliquid".into(),
-            market_coin: coin.to_string(),
-            venue_symbol: Some(coin.to_string()),
-            venue_market_id: None,
-        }
-    }));
+    if let Some(hyperliquid) = hyperliquid {
+        resolved_venue_markets.extend(hyperliquid.resolved_markets().into_iter().map(|coin| {
+            ResolvedVenueMarket {
+                venue: "hyperliquid".into(),
+                market_coin: coin.to_string(),
+                venue_symbol: Some(coin.to_string()),
+                venue_market_id: None,
+            }
+        }));
+    }
     resolved_venue_markets.extend(lighter.resolved_markets().into_iter().map(|(coin, id)| {
         ResolvedVenueMarket {
             venue: "lighter".into(),

@@ -14,5 +14,6 @@ recorder = { path = "../../crates/recorder" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 venue = { path = "../../crates/venue" }
 venue-aster = { path = "../../crates/venue-aster" }
+venue-binance = { path = "../../crates/venue-binance" }
 venue-hyperliquid = { path = "../../crates/venue-hyperliquid" }
 venue-lighter = { path = "../../crates/venue-lighter" }

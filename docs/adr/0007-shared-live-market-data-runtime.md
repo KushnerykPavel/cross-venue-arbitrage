@@ -53,7 +53,8 @@ decisions into a generic abstraction.
   shared runtime.
 - The transport boundary is injected internally. Production uses Tungstenite;
   runtime tests use a scripted in-memory transport.
-- `venue-hyperliquid`, `venue-lighter`, and `venue-aster` depend on `venue`.
+- `venue-hyperliquid`, `venue-lighter`, `venue-aster`, and `venue-binance`
+  depend on `venue`.
   `venue` does not depend on venue-specific crates. Applications remain the
   composition roots.
 - The former public venue-specific live sessions, per-market adapters, outcome
