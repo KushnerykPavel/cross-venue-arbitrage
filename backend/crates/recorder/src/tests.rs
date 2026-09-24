@@ -120,6 +120,54 @@ fn converts_snapshot_without_losing_exact_decimals_or_source_sequence() {
 }
 
 #[test]
+fn truncates_lighter_snapshots_to_top_ten_only_when_storing() {
+    let coin = MarketCoin::try_new("BTC").unwrap();
+    let bids = (0..12)
+        .map(|index| {
+            BookLevel::new(
+                Price::from_str(&(100 - index).to_string()).unwrap(),
+                Quantity::from_str("1").unwrap(),
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+    let asks = (0..12)
+        .map(|index| {
+            BookLevel::new(
+                Price::from_str(&(101 + index).to_string()).unwrap(),
+                Quantity::from_str("1").unwrap(),
+                None,
+            )
+        })
+        .collect::<Vec<_>>();
+    let snapshot = OrderBookSnapshot::try_new(
+        Venue::Lighter,
+        Symbol::perpetual(coin),
+        Some(99),
+        EventTimestamps::new(
+            Vec::new(),
+            LocalObservationTime::from_nanos_since_start(10),
+            LocalObservationTime::from_nanos_since_start(11),
+        ),
+        bids,
+        asks,
+    )
+    .unwrap();
+
+    let stored =
+        StoredEventV1::from_normalized(1, &NormalizedMarketEvent::OrderBookSnapshot(snapshot))
+            .unwrap();
+
+    let StoredPayloadV1::OrderBookSnapshot { bids, asks } = stored.payload() else {
+        panic!("expected stored Order Book")
+    };
+    assert_eq!(bids.len(), 10);
+    assert_eq!(asks.len(), 10);
+    assert_eq!(bids[0].price.coefficient, 100);
+    assert_eq!(asks[0].price.coefficient, 101);
+}
+
+#[test]
 fn converts_typed_trade_identity_and_exchange_times() {
     let coin = MarketCoin::try_new("BTC").unwrap();
     let trade = MarketTrade::new(

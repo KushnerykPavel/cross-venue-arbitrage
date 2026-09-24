@@ -21,7 +21,7 @@ use crate::metadata::{AsterMarket, MetadataError, resolve_markets};
 use crate::trade::decode_trade;
 
 const ASTER_WS_BASE_URL: &str = "wss://fstream.asterdex.com/stream?streams=";
-const MAX_LEVELS_PER_SIDE: usize = 20;
+const MAX_LEVELS_PER_SIDE: usize = 10;
 
 #[derive(Debug)]
 pub struct AsterAdapter {
@@ -46,7 +46,7 @@ impl AsterAdapter {
             .flat_map(|market| {
                 let symbol = market.symbol().to_lowercase();
                 [
-                    format!("{symbol}@depth20@100ms"),
+                    format!("{symbol}@depth10@100ms"),
                     format!("{symbol}@aggTrade"),
                 ]
             })
@@ -512,7 +512,7 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    const SNAPSHOT: &str = r#"{"stream":"btcusdt@depth20@100ms","data":{"e":"depthUpdate","E":10,"T":9,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[["100","1"]],"a":[["101","1"]]}}"#;
+    const SNAPSHOT: &str = r#"{"stream":"btcusdt@depth10@100ms","data":{"e":"depthUpdate","E":10,"T":9,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[["100","1"]],"a":[["101","1"]]}}"#;
     const TRADE: &str = r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":10,"s":"BTCUSDT","a":91,"p":"100","q":"1","f":700,"l":703,"T":9,"m":false}}"#;
 
     struct Clock(Cell<u64>);
@@ -539,7 +539,7 @@ mod tests {
         let mut adapter = adapter();
         assert_eq!(
             adapter.endpoint(),
-            "wss://fstream.asterdex.com/stream?streams=btcusdt@depth20@100ms/btcusdt@aggTrade/ethusdt@depth20@100ms/ethusdt@aggTrade"
+            "wss://fstream.asterdex.com/stream?streams=btcusdt@depth10@100ms/btcusdt@aggTrade/ethusdt@depth10@100ms/ethusdt@aggTrade"
         );
         assert_eq!(adapter.on_connected().len(), 2);
         let actions = adapter.on_text(

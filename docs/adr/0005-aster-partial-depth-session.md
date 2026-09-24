@@ -21,8 +21,8 @@ delivers complete normalized snapshots synchronously.
   hardcoded.
 - One Aster Live Market Data Session owns one combined WebSocket connection and
   an independent Order Book for every configured market.
-- The session uses `<symbol>@depth20@100ms`. Each partial-depth event replaces
-  the complete normalized top-20 book for its market. It is not merged as a
+- The session uses `<symbol>@depth10@100ms`. Each partial-depth event replaces
+  the complete normalized top-10 book for its market. It is not merged as a
   delta.
 - Aster's final update ID `u` is retained as `source_sequence`; event time `E`
   is retained as the exchange timestamp. Aster does not provide per-level order
@@ -37,7 +37,7 @@ delivers complete normalized snapshots synchronously.
 
 ## Consequences
 
-The Aster view is intentionally limited to top 20 rather than reconstructing
+The Aster view is intentionally limited to top 10 rather than reconstructing
 the full depth. This avoids adding the buffering and recovery state required by
 the diff-depth protocol and matches the current snapshot-oriented live path.
 Changing to full-depth reconstruction requires a separate decision covering a

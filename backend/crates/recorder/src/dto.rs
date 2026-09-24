@@ -14,6 +14,8 @@ use market_data::{
 };
 use serde::{Deserialize, Serialize};
 
+const LIGHTER_STORAGE_LEVELS_PER_SIDE: usize = 10;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StoredEventV1 {
     capture_sequence: u64,
@@ -263,18 +265,8 @@ impl StoredEventV1 {
                         .source_sequence()
                         .map(StoredSourceIdV1::OrderBookSequence),
                     payload: StoredPayloadV1::OrderBookSnapshot {
-                        bids: snapshot
-                            .bids()
-                            .iter()
-                            .copied()
-                            .map(StoredBookLevelV1::from)
-                            .collect(),
-                        asks: snapshot
-                            .asks()
-                            .iter()
-                            .copied()
-                            .map(StoredBookLevelV1::from)
-                            .collect(),
+                        bids: stored_book_levels(snapshot, true),
+                        asks: stored_book_levels(snapshot, false),
                     },
                 })
             }
@@ -436,6 +428,18 @@ impl StoredEventV1 {
             )),
         }
     }
+}
+
+fn stored_book_levels(snapshot: &OrderBookSnapshot, bids: bool) -> Vec<StoredBookLevelV1> {
+    let levels = if bids {
+        snapshot.bids()
+    } else {
+        snapshot.asks()
+    };
+    let levels = (snapshot.venue() == Venue::Lighter)
+        .then(|| levels.iter().take(LIGHTER_STORAGE_LEVELS_PER_SIDE))
+        .map_or_else(|| levels.iter().take(levels.len()), |levels| levels);
+    levels.copied().map(StoredBookLevelV1::from).collect()
 }
 
 fn stored_book_level(level: &StoredBookLevelV1) -> Result<BookLevel, StorageConversionError> {

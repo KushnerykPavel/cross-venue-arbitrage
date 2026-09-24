@@ -19,7 +19,7 @@ use venue::{
 
 use crate::metadata::{BinanceMarket, MetadataError, resolve_markets};
 
-const BINANCE_WS_BASE_URL: &str = "wss://fstream.binance.com/stream?streams=";
+const BINANCE_WS_BASE_URL: &str = "wss://fstream.binance.com/public/stream?streams=";
 
 #[derive(Debug)]
 pub struct BinanceAdapter {
@@ -44,7 +44,7 @@ impl BinanceAdapter {
             .flat_map(|market| {
                 let symbol = market.symbol().to_lowercase();
                 [
-                    format!("{symbol}@depth20@100ms"),
+                    format!("{symbol}@depth10@100ms"),
                     format!("{symbol}@aggTrade"),
                 ]
             })
@@ -525,10 +525,10 @@ mod tests {
         let mut adapter = adapter();
         assert_eq!(
             adapter.endpoint(),
-            "wss://fstream.binance.com/stream?streams=btcusdt@depth20@100ms/btcusdt@aggTrade"
+            "wss://fstream.binance.com/public/stream?streams=btcusdt@depth10@100ms/btcusdt@aggTrade"
         );
         let clock = Clock(Cell::new(1));
-        let depth = r#"{"stream":"btcusdt@depth20@100ms","data":{"e":"depthUpdate","E":10,"s":"BTCUSDT","u":2,"b":[["100","1"]],"a":[["101","1"]]}}"#;
+        let depth = r#"{"stream":"btcusdt@depth10@100ms","data":{"e":"depthUpdate","E":10,"s":"BTCUSDT","u":2,"b":[["100","1"]],"a":[["101","1"]]}}"#;
         assert!(matches!(
             adapter
                 .on_text(

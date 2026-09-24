@@ -24,8 +24,11 @@ and private execution data are excluded from this MVP.
   `Capture Sequence` at one. A restart always creates a new Capture Run; event
   identity is `(capture_id, capture_sequence)`.
 - The canonical replay truth is an append-only normalized event log. It stores
-  full accepted `OrderBookSnapshot` values, `OrderBookUnavailable`, public
-  `MarketTrade`, `TradeStreamUnavailable`, and `TradeStreamResumed` events.
+  accepted venue-depth `OrderBookSnapshot` values, `OrderBookUnavailable`,
+  public `MarketTrade`, `TradeStreamUnavailable`, and `TradeStreamResumed`
+  events. Binance and Aster capture native top-10 snapshots. Lighter keeps a
+  full reconstructed book in the engine but stores only the top 10 levels per
+  side at the recorder boundary.
 - Live and replay send the same owned normalized event model through the same
   engine entry point. Exchange time never determines replay order.
 - Each venue uses one WebSocket for its Order Book and trade subscriptions.
@@ -66,12 +69,13 @@ and private execution data are excluded from this MVP.
 ## Consequences
 
 The same log and replay configuration can reproduce the observed event order
-and strategy inputs. The normalized-only MVP cannot re-run historical frames
-through a corrected decoder; extending capture to raw frames requires a later
-decision. Full Order Book snapshots and owned queue values favor correctness
-and simplicity over storage and copy efficiency. Compression, delta encoding,
-queue sizing, and retention remain measurement-driven follow-ups after the MVP
-report.
+and the configured captured-depth strategy inputs. The normalized-only MVP
+cannot re-run historical frames through a corrected decoder; extending capture
+to raw frames requires a later decision. Native top-10 feeds reduce ingress
+volume for Binance and Aster. Lighter is pruned only after full reconstruction,
+so levels outside the stored range cannot corrupt live book state. Compression,
+delta encoding, queue sizing, and retention remain measurement-driven
+follow-ups after the MVP report.
 
 The recorder queue is the first approved application queue in the live path.
 It does not weaken ADR 0007's synchronous per-frame processing: enqueue and

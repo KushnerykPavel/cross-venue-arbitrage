@@ -116,3 +116,12 @@ def test_strategy_requires_latency_buffer_after_net_edge():
     events = [book("a", 1, 99.0, 100.0, 10), book("b", 2, 100.015, 101.0, 20)]
     result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
     assert result.orders == []
+
+
+def test_binance_taker_fee_is_explicitly_configured():
+    config = SimulationConfig()
+
+    assert config.taker_fee_bps["binance"] == 5.0
+    assert config.order_latency_ns["binance"] == 50_000_000
+    assert config.market_data_latency_ns["binance"] == 0
+    assert config.slippage_bps["binance"] == 0.0

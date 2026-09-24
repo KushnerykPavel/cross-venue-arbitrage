@@ -88,10 +88,11 @@ TradeStreamUnavailable
 TradeStreamResumed
 ```
 
-Every accepted L2 update produces a complete `OrderBookSnapshot`. Hyperliquid
-and Aster inputs are naturally complete snapshots. Lighter remains
-venue-incremental internally but publishes the complete reconstructed state
-after every accepted update.
+Every accepted L2 update produces a complete `OrderBookSnapshot` for the
+configured venue view. Hyperliquid remains a top-20 view; Binance and Aster
+use native top-10 snapshots. Lighter remains venue-incremental internally and
+publishes the complete reconstructed state to the engine, while the recorder
+stores only its top 10 levels per side.
 
 Hyperliquid also publishes `BestBidOfferUpdated` from its independent `bbo`
 subscription. BBO is a separate state stream: it does not replace or mutate

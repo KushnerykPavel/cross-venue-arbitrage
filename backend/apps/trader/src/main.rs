@@ -8,9 +8,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use domain::{MarketCoin, Venue};
+use domain::MarketCoin;
 use engine::MarketDataEngine;
-use market_data::{NormalizedMarketEvent, OrderBookSnapshot};
 use recorder::{
     CaptureCoordinator, CaptureMetadata, CaptureSettings, CaptureStatus, ResolvedVenueMarket,
     SegmentLimits,
@@ -217,8 +216,6 @@ fn handle_live_event(
                 .map_err(|_| io::Error::other("market-data engine lock was poisoned"))?
                 .process(accepted.capture_sequence, &accepted.event)
                 .map_err(io::Error::other)?;
-            drop(capture);
-            present_market_data(accepted.capture_sequence, accepted.event);
         }
         LiveSessionEvent::TradeDeduplicated { .. } => {
             capture
@@ -382,80 +379,4 @@ fn present_lifecycle(event: LiveSessionEvent<'_>) {
             unreachable!("deduplication is handled before lifecycle presentation")
         }
     }
-}
-
-fn present_market_data(capture_sequence: u64, event: NormalizedMarketEvent) {
-    match event {
-        NormalizedMarketEvent::OrderBookSnapshot(snapshot) => print_top_of_book(
-            capture_sequence,
-            snapshot.venue(),
-            snapshot.symbol().market_coin(),
-            &snapshot,
-        ),
-        NormalizedMarketEvent::BestBidOfferUpdated(bbo) => println!(
-            "capture_sequence={} {} {} BBO bid={:?} ask={:?}",
-            capture_sequence,
-            bbo.venue(),
-            bbo.symbol().market_coin(),
-            bbo.bid().map(|level| (level.price(), level.quantity())),
-            bbo.ask().map(|level| (level.price(), level.quantity())),
-        ),
-        NormalizedMarketEvent::OrderBookUnavailable(event) => eprintln!(
-            "capture_sequence={} {} {} Order Book unavailable ({:?}): {}",
-            capture_sequence,
-            event.venue(),
-            event.market_coin(),
-            event.category(),
-            event.diagnostic()
-        ),
-        NormalizedMarketEvent::MarketTrade(trade) => println!(
-            "capture_sequence={} {} {} trade price={} size={} side={:?} kind={:?}",
-            capture_sequence,
-            trade.venue(),
-            trade.symbol().market_coin(),
-            trade.price(),
-            trade.quantity(),
-            trade.aggressor_side(),
-            trade.trade_kind(),
-        ),
-        NormalizedMarketEvent::TradeStreamUnavailable(event) => eprintln!(
-            "capture_sequence={} {} {} Trade Stream unavailable ({:?}): {}",
-            capture_sequence,
-            event.venue(),
-            event.market_coin(),
-            event.category(),
-            event.diagnostic()
-        ),
-        NormalizedMarketEvent::TradeStreamResumed(event) => println!(
-            "capture_sequence={} {} {} Trade Stream resumed",
-            capture_sequence,
-            event.venue(),
-            event.market_coin()
-        ),
-    }
-}
-
-fn print_top_of_book(
-    capture_sequence: u64,
-    venue: Venue,
-    market_coin: &MarketCoin,
-    snapshot: &OrderBookSnapshot,
-) {
-    let best_bid = snapshot.bids()[0];
-    let best_ask = snapshot.asks()[0];
-    let timestamps = snapshot.timestamps();
-    println!(
-        "capture_sequence={} {venue} {market_coin} bid={} size={} ask={} size={} levels={}/{} source_sequence={:?} exchange_times={:?} local_receive_ns={} processing_completed_ns={}",
-        capture_sequence,
-        best_bid.price(),
-        best_bid.quantity(),
-        best_ask.price(),
-        best_ask.quantity(),
-        snapshot.bids().len(),
-        snapshot.asks().len(),
-        snapshot.source_sequence(),
-        timestamps.exchange_times(),
-        timestamps.local_receive().nanos_since_start(),
-        timestamps.processing_completed().nanos_since_start(),
-    );
 }
