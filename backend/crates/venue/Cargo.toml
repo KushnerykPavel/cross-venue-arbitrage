@@ -10,7 +10,7 @@ domain = { path = "../domain" }
 futures-util = "0.3"
 market-data = { path = "../market-data" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-tokio = { version = "1", features = ["net", "time"] }
+tokio = { version = "1", features = ["macros", "net", "time"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 
 [dev-dependencies]

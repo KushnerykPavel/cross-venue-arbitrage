@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use venue::{LiveMarketDataSession, LiveSessionEvent, MonotonicClock, ShutdownSignal};
 use venue_aster::AsterAdapter;
-use venue_binance::BinanceAdapter;
+use venue_binance::{BinanceAdapter, BinanceAdapters};
 use venue_hyperliquid::HyperliquidAdapter;
 use venue_lighter::LighterAdapter;
 
@@ -67,15 +67,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let engine = Arc::new(Mutex::new(MarketDataEngine::new()));
 
     let clock = MonotonicClock::start();
-    let binance = LiveMarketDataSession::new(binance, clock.clone());
+    let binance_depth = LiveMarketDataSession::new(binance.depth, clock.clone());
+    let binance_trades = LiveMarketDataSession::new(binance.trades, clock.clone());
     let aster = LiveMarketDataSession::new(aster, clock.clone());
     let lighter = LiveMarketDataSession::new(lighter, clock.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut sessions = JoinSet::new();
     spawn_session(
         &mut sessions,
-        "Binance",
-        binance,
+        "Binance depth",
+        binance_depth,
+        shutdown_rx.clone(),
+        Arc::clone(&capture),
+        Arc::clone(&engine),
+    );
+    spawn_session(
+        &mut sessions,
+        "Binance trades",
+        binance_trades,
         shutdown_rx.clone(),
         Arc::clone(&capture),
         Arc::clone(&engine),
@@ -265,7 +274,7 @@ fn configured_markets(coins: &[MarketCoin]) -> String {
 
 fn capture_metadata(
     config: &TraderConfig,
-    binance: &BinanceAdapter,
+    binance: &BinanceAdapters,
     aster: &AsterAdapter,
     hyperliquid: Option<&HyperliquidAdapter>,
     lighter: &LighterAdapter,

@@ -3,11 +3,11 @@
 ## Purpose
 
 This document specifies the first reproducible data pipeline for quantitative
-strategy research. It turns live BTC perpetual observations from Aster,
-Hyperliquid, and Lighter into a validated canonical log, deterministic replay,
-and an offline Parquet dataset.
+strategy research. It turns live BTC perpetual observations from Binance,
+Aster, Hyperliquid, and Lighter into a validated canonical log, deterministic
+replay, and an offline Parquet dataset.
 
-The MVP is a thirty-minute measurement run. It establishes correctness and
+The MVP is a two-hour measurement run. It establishes correctness and
 real data-volume evidence before compression, delta encoding, capacity tuning,
 or retention policy are considered.
 
@@ -30,8 +30,9 @@ and microprice are derived offline from the recorded L2 state.
 ## Data flow
 
 ```text
-Aster / Hyperliquid / Lighter
-        │ one WebSocket per venue
+Binance / Aster / Hyperliquid / Lighter
+        │ one WebSocket per venue except Binance
+        │ (depth on /public; trades on /market)
         ▼
 venue-specific whole-market adapter
         │ owned NormalizedMarketEvent
@@ -57,11 +58,13 @@ Capture Run stops as incomplete.
 
 - `market-data` owns the owned `NormalizedMarketEvent`, `MarketTrade`, Order
   Book payload, availability events, and shared time vocabulary.
-- `venue-hyperliquid`, `venue-lighter`, and `venue-aster` own wire decoding,
-  normalization, trade identity interpretation, deduplication, and recovery
-  decisions.
+- `venue-binance`, `venue-hyperliquid`, `venue-lighter`, and `venue-aster` own
+  wire decoding, normalization, trade identity interpretation,
+  deduplication, and recovery decisions.
 - `venue` owns connection lifecycle and synchronous delivery of normalized
-  events. Each venue runtime uses one WebSocket for both L2 and trades.
+  events. Binance uses independent `/public` depth and `/market` trade
+  sessions, as required by Binance's Futures stream routing. Other venue
+  runtimes use one WebSocket for L2 and trades.
 - `engine` owns the common live/replay processing entry point and Capture
   Sequence semantics.
 - `recorder` owns `StoredEventV1`, domain-to-storage conversion, the bounded
@@ -447,7 +450,7 @@ retention be changed.
 4. **Implemented.** Implement validated deterministic replay through `engine`.
 5. **Exporter implemented; VPS measurement pending.** The offline Parquet
    exporter is implemented and verified with a live end-to-end smoke capture.
-   The thirty-minute BTC measurement remains an operational run on the target
+   The two-hour BTC measurement remains an operational run on the target
    VPS.
 
 Run replay against a capture directory only after the Capture Run has closed:

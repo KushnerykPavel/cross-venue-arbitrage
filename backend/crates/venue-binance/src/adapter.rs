@@ -19,43 +19,69 @@ use venue::{
 
 use crate::metadata::{BinanceMarket, MetadataError, resolve_markets};
 
-const BINANCE_WS_BASE_URL: &str = "wss://fstream.binance.com/public/stream?streams=";
+const BINANCE_PUBLIC_WS_BASE_URL: &str = "wss://fstream.binance.com/public/stream?streams=";
+const BINANCE_MARKET_WS_BASE_URL: &str = "wss://fstream.binance.com/market/stream?streams=";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BinanceFeed {
+    Depth,
+    Trades,
+}
+
+#[derive(Debug)]
+pub struct BinanceAdapters {
+    pub depth: BinanceAdapter,
+    pub trades: BinanceAdapter,
+}
 
 #[derive(Debug)]
 pub struct BinanceAdapter {
-    markets: Vec<MarketOrderBook>,
+    markets: Vec<BinanceMarketState>,
     endpoint: String,
+    feed: BinanceFeed,
 }
 
 impl BinanceAdapter {
     pub async fn bootstrap(
         market_coins: Vec<MarketCoin>,
         trade_dedup_capacity: NonZeroUsize,
-    ) -> Result<Self, MetadataError> {
-        Ok(Self::from_markets(
-            resolve_markets(&market_coins).await?,
-            trade_dedup_capacity,
-        ))
+    ) -> Result<BinanceAdapters, MetadataError> {
+        let markets = resolve_markets(&market_coins).await?;
+        Ok(BinanceAdapters {
+            depth: Self::from_markets(markets.clone(), trade_dedup_capacity, BinanceFeed::Depth),
+            trades: Self::from_markets(markets, trade_dedup_capacity, BinanceFeed::Trades),
+        })
     }
 
-    fn from_markets(markets: Vec<BinanceMarket>, trade_dedup_capacity: NonZeroUsize) -> Self {
+    fn from_markets(
+        markets: Vec<BinanceMarket>,
+        trade_dedup_capacity: NonZeroUsize,
+        feed: BinanceFeed,
+    ) -> Self {
         let streams = markets
             .iter()
-            .flat_map(|market| {
+            .map(|market| {
                 let symbol = market.symbol().to_lowercase();
-                [
-                    format!("{symbol}@depth10@100ms"),
-                    format!("{symbol}@aggTrade"),
-                ]
+                match feed {
+                    BinanceFeed::Depth => format!("{symbol}@depth10@100ms"),
+                    BinanceFeed::Trades => format!("{symbol}@aggTrade"),
+                }
             })
             .collect::<Vec<_>>()
             .join("/");
         Self {
             markets: markets
                 .into_iter()
-                .map(|market| MarketOrderBook::new(market, trade_dedup_capacity))
+                .map(|market| BinanceMarketState::new(market, trade_dedup_capacity))
                 .collect(),
-            endpoint: format!("{BINANCE_WS_BASE_URL}{streams}"),
+            endpoint: format!(
+                "{}{streams}",
+                match feed {
+                    BinanceFeed::Depth => BINANCE_PUBLIC_WS_BASE_URL,
+                    BinanceFeed::Trades => BINANCE_MARKET_WS_BASE_URL,
+                }
+            ),
+            feed,
         }
     }
 
@@ -69,6 +95,12 @@ impl BinanceAdapter {
                 )
             })
             .collect()
+    }
+}
+
+impl BinanceAdapters {
+    pub fn resolved_markets(&self) -> Vec<(MarketCoin, String)> {
+        self.depth.resolved_markets()
     }
 }
 
@@ -106,29 +138,37 @@ impl MarketDataAdapter for BinanceAdapter {
         else {
             return Vec::new();
         };
-        if envelope.data.get("e").and_then(Value::as_str) == Some("aggTrade") {
-            return self.handle_trade(index, envelope.data, local_receive, clock);
-        }
-        match self.markets[index].apply_book_payload(envelope.data, local_receive, clock) {
-            Ok(true) => vec![AdapterAction::Publish(
-                NormalizedMarketEvent::OrderBookSnapshot(
-                    self.markets[index]
-                        .book()
-                        .current()
-                        .expect("accepted update installs a snapshot")
-                        .clone(),
-                ),
-            )],
-            Ok(false) => Vec::new(),
-            Err(error) => vec![AdapterAction::Publish(
-                NormalizedMarketEvent::OrderBookUnavailable(MarketDataUnavailable::new(
-                    Venue::Binance,
-                    self.markets[index].market().market_coin().clone(),
-                    local_receive,
-                    UnavailabilityCategory::InvalidMarketData,
-                    error.to_string(),
-                )),
-            )],
+        match self.feed {
+            BinanceFeed::Trades => {
+                if envelope.data.get("e").and_then(Value::as_str) == Some("aggTrade") {
+                    self.handle_trade(index, envelope.data, local_receive, clock)
+                } else {
+                    Vec::new()
+                }
+            }
+            BinanceFeed::Depth => {
+                match self.markets[index].apply_book_payload(envelope.data, local_receive, clock) {
+                    Ok(true) => vec![AdapterAction::Publish(
+                        NormalizedMarketEvent::OrderBookSnapshot(
+                            self.markets[index]
+                                .book()
+                                .current()
+                                .expect("accepted update installs a snapshot")
+                                .clone(),
+                        ),
+                    )],
+                    Ok(false) => Vec::new(),
+                    Err(error) => vec![AdapterAction::Publish(
+                        NormalizedMarketEvent::OrderBookUnavailable(MarketDataUnavailable::new(
+                            Venue::Binance,
+                            self.markets[index].market().market_coin().clone(),
+                            local_receive,
+                            UnavailabilityCategory::InvalidMarketData,
+                            error.to_string(),
+                        )),
+                    )],
+                }
+            }
         }
     }
 
@@ -139,29 +179,34 @@ impl MarketDataAdapter for BinanceAdapter {
     ) -> Vec<AdapterAction> {
         self.markets
             .iter_mut()
-            .flat_map(|market| {
-                market.disconnected();
+            .map(|market| {
                 let coin = market.market().market_coin().clone();
-                [
-                    AdapterAction::Publish(NormalizedMarketEvent::OrderBookUnavailable(
-                        MarketDataUnavailable::new(
-                            Venue::Binance,
-                            coin.clone(),
-                            observed_at,
-                            UnavailabilityCategory::Disconnected,
-                            reason,
-                        ),
-                    )),
-                    AdapterAction::Publish(NormalizedMarketEvent::TradeStreamUnavailable(
-                        MarketDataUnavailable::new(
-                            Venue::Binance,
-                            coin,
-                            observed_at,
-                            UnavailabilityCategory::Disconnected,
-                            reason,
-                        ),
-                    )),
-                ]
+                match self.feed {
+                    BinanceFeed::Depth => {
+                        market.disconnected(BinanceFeed::Depth);
+                        AdapterAction::Publish(NormalizedMarketEvent::OrderBookUnavailable(
+                            MarketDataUnavailable::new(
+                                Venue::Binance,
+                                coin,
+                                observed_at,
+                                UnavailabilityCategory::Disconnected,
+                                reason,
+                            ),
+                        ))
+                    }
+                    BinanceFeed::Trades => {
+                        market.disconnected(BinanceFeed::Trades);
+                        AdapterAction::Publish(NormalizedMarketEvent::TradeStreamUnavailable(
+                            MarketDataUnavailable::new(
+                                Venue::Binance,
+                                coin,
+                                observed_at,
+                                UnavailabilityCategory::Disconnected,
+                                reason,
+                            ),
+                        ))
+                    }
+                }
             })
             .collect()
     }
@@ -226,14 +271,14 @@ impl BinanceAdapter {
 }
 
 #[derive(Debug)]
-struct MarketOrderBook {
+struct BinanceMarketState {
     market: BinanceMarket,
     book: OrderBook,
     trade_dedup: BoundedDeduplicator<u64>,
     trade_available: bool,
 }
 
-impl MarketOrderBook {
+impl BinanceMarketState {
     fn new(market: BinanceMarket, trade_dedup_capacity: NonZeroUsize) -> Self {
         let symbol = Symbol::perpetual(market.market_coin().clone());
         Self {
@@ -338,9 +383,11 @@ impl MarketOrderBook {
         }
     }
 
-    fn disconnected(&mut self) {
-        self.book.mark_unhealthy();
-        self.trade_available = false;
+    fn disconnected(&mut self, feed: BinanceFeed) {
+        match feed {
+            BinanceFeed::Depth => self.book.mark_unhealthy(),
+            BinanceFeed::Trades => self.trade_available = false,
+        }
     }
 
     fn mark_trade_unavailable(&mut self) {
@@ -510,27 +557,34 @@ mod tests {
         }
     }
 
-    fn adapter() -> BinanceAdapter {
-        BinanceAdapter::from_markets(
-            vec![BinanceMarket::new(
-                MarketCoin::try_new("BTC").unwrap(),
-                "BTCUSDT".into(),
-            )],
-            NonZeroUsize::new(10).unwrap(),
-        )
+    fn adapters() -> BinanceAdapters {
+        let markets = vec![BinanceMarket::new(
+            MarketCoin::try_new("BTC").unwrap(),
+            "BTCUSDT".into(),
+        )];
+        let capacity = NonZeroUsize::new(10).unwrap();
+        BinanceAdapters {
+            depth: BinanceAdapter::from_markets(markets.clone(), capacity, BinanceFeed::Depth),
+            trades: BinanceAdapter::from_markets(markets, capacity, BinanceFeed::Trades),
+        }
     }
 
     #[test]
-    fn routes_partial_depth_and_aggregate_trade() {
-        let mut adapter = adapter();
+    fn routes_depth_and_aggregate_trades_to_their_endpoint_categories() {
+        let mut adapters = adapters();
         assert_eq!(
-            adapter.endpoint(),
-            "wss://fstream.binance.com/public/stream?streams=btcusdt@depth10@100ms/btcusdt@aggTrade"
+            adapters.depth.endpoint(),
+            "wss://fstream.binance.com/public/stream?streams=btcusdt@depth10@100ms"
+        );
+        assert_eq!(
+            adapters.trades.endpoint(),
+            "wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade"
         );
         let clock = Clock(Cell::new(1));
         let depth = r#"{"stream":"btcusdt@depth10@100ms","data":{"e":"depthUpdate","E":10,"s":"BTCUSDT","u":2,"b":[["100","1"]],"a":[["101","1"]]}}"#;
         assert!(matches!(
-            adapter
+            adapters
+                .depth
                 .on_text(
                     depth,
                     LocalObservationTime::from_nanos_since_start(1),
@@ -543,7 +597,8 @@ mod tests {
         ));
         let trade = r#"{"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":10,"s":"BTCUSDT","a":91,"p":"100","q":"1","f":700,"l":703,"T":9,"m":false}}"#;
         assert!(matches!(
-            adapter
+            adapters
+                .trades
                 .on_text(
                     trade,
                     LocalObservationTime::from_nanos_since_start(2),

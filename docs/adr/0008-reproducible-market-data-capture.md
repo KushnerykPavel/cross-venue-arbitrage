@@ -14,7 +14,7 @@ one run, venue timestamps do not define a cross-venue order, and the three
 venues have different Order Book and public-trade semantics.
 
 The first dataset must remain small enough to inspect and explain. It targets a
-thirty-minute BTC perpetual capture from Binance, Aster, Hyperliquid, and Lighter on the
+two-hour BTC perpetual capture from Binance, Aster, Hyperliquid, and Lighter on the
 existing VPS. Raw WebSocket frames, compression, automatic retention, funding,
 and private execution data are excluded from this MVP.
 
@@ -31,7 +31,11 @@ and private execution data are excluded from this MVP.
   side at the recorder boundary.
 - Live and replay send the same owned normalized event model through the same
   engine entry point. Exchange time never determines replay order.
-- Each venue uses one WebSocket for its Order Book and trade subscriptions.
+- Each venue uses one WebSocket for its Order Book and trade subscriptions,
+  except Binance: its USDⓈ-M Futures routing assigns partial-depth feeds to
+  `/public` and aggregate trades to `/market`, so it uses one bounded session
+  for each endpoint. Both sessions publish the same normalized event model
+  into the shared capture and replay path.
 - Aster aggregate trades remain aggregates. Lighter ordinary, liquidation,
   deleverage, and market-settlement reports are retained. Venue-native trade
   identities are preserved and used for adapter-level deduplication when the

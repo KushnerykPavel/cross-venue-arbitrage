@@ -84,7 +84,7 @@ The binary event log is the replay source of truth. Offline jobs can
 convert it to **Parquet**. **DuckDB** and Python/Polars are used for
 research and analytics.
 
-The first storage MVP is a thirty-minute BTC perpetual Capture Run across
+The first storage MVP is a two-hour BTC perpetual Capture Run across
 Aster, Hyperliquid, and Lighter. It records full accepted L2 snapshots, public
 Market Trades, and availability transitions into uncompressed, versioned
 Postcard segments. Capture Sequence defines deterministic replay order; a

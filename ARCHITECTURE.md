@@ -51,10 +51,12 @@ Internal file layout is not part of the crate interface.
 - `venue-aster`
 - `venue-binance`
 
-Each venue crate exposes one whole-market adapter. It owns routing,
-normalization, recovery commands, an independent Order Book, and bounded trade
-identity deduplication for every configured Market Coin. Venue wire
-representations must not leak into the shared runtime or strategy logic.
+Each venue crate exposes whole-market adapters. The Binance adapter is split
+into paired depth and trade sessions because USDⓈ-M Futures routes those
+streams through separate WebSocket endpoints. Together, the adapters own
+routing, normalization, recovery commands, an independent Order Book, and
+bounded trade identity deduplication for every configured Market Coin. Venue
+wire representations must not leak into the shared runtime or strategy logic.
 
 ### Applications
 
