@@ -69,3 +69,18 @@ only configuration, composition, shutdown, and presentation. Slow presentation
 continues to delay the next receive, so console timing is still not latency
 evidence. Any future queue, parallel market processing, or clock-origin change
 requires a new decision because it would alter ordering or timestamp meaning.
+
+## Amendment (2026-09-30): frame batches and invalid-message notifications
+
+- The runtime still executes every action returned by one adapter callback
+  before polling the next frame. Consecutive `Publish` actions are delivered to
+  the handler as one `MarketData { events }` batch, before any following send,
+  subscription, reconnect, or stop action. `TradeDeduplicated` and the new
+  `InvalidMessage` notifications are delivered immediately after that batch.
+- `trader` holds the capture and engine locks for a whole batch, so every event
+  of one frame receives consecutive Capture Sequence values even though venue
+  sessions run on a multi-threaded runtime.
+- An adapter returns `AdapterAction::InvalidMessage` for a frame it cannot
+  decode or route to a configured market. This remains non-invalidating, as
+  above; it is counted in the Capture Run's `invalid_messages` quality counter.
+

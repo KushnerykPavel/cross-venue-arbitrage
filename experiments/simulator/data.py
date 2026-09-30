@@ -75,12 +75,13 @@ def load_events(
 
     if availability_files:
         availability = within_split(pl.scan_parquet(availability_files, hive_partitioning=True)).select([
-            "venue", "capture_sequence", "transition", "observed_at"
+            "venue", "capture_sequence", "stream", "transition", "observed_at"
         ]).collect()
-        for venue, sequence, transition, observed_at in availability.iter_rows():
+        for venue, sequence, stream, transition, observed_at in availability.iter_rows():
             events.append(MarketEvent(
                 sequence, observed_at, "availability", venue,
                 availability_transition=transition,
+                availability_stream=stream,
             ))
 
     priority = {"availability": 0, "book": 1, "trade": 2}

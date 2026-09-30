@@ -22,12 +22,16 @@ venue as a fair-value signal for quoting on Lighter.
 
 ## Initial venues and instrument
 
-Initial venues:
+The active lead/lag roles are:
 
-1.  Aster
-2.  Hyperliquid
-3.  Lighter
-4.  Binance Futures
+1.  Binance Futures: lead market-data source and signal venue only. Never
+    open a position on Binance.
+2.  Aster: lag venue where arbitrage positions may be opened.
+3.  Lighter: lag venue where arbitrage positions may be opened.
+
+Hyperliquid is excluded because its order book is unavailable to this project.
+The historical Hyperliquid implementation and ADRs do not define the active
+venue set.
 
 Initial instrument: **BTC perpetual**.
 
@@ -85,13 +89,15 @@ convert it to **Parquet**. **DuckDB** and Python/Polars are used for
 research and analytics.
 
 The first storage MVP is a two-hour BTC perpetual Capture Run across
-Aster, Hyperliquid, and Lighter. It records full accepted L2 snapshots, public
+Binance, Aster, and Lighter. It records accepted L2 snapshots, public
 Market Trades, and availability transitions into uncompressed, versioned
 Postcard segments. Capture Sequence defines deterministic replay order; a
 bounded recorder handoff fails the entire run rather than dropping events.
 Detailed schemas, durability behavior, validation, Parquet layout, and success
 criteria are specified in
 [`docs/design/reproducible-market-data-pipeline.md`](docs/design/reproducible-market-data-pipeline.md).
+Active venue roles are recorded in
+[`docs/adr/0010-binance-lead-aster-lighter-lag.md`](docs/adr/0010-binance-lead-aster-lighter-lag.md).
 
 ClickHouse, Kafka and Redis are intentionally excluded from the first
 version unless a demonstrated requirement appears.

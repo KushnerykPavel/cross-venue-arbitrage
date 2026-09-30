@@ -46,10 +46,16 @@ Internal file layout is not part of the crate interface.
 
 ### Venue adapters
 
-- `venue-hyperliquid`
-- `venue-lighter`
-- `venue-aster`
 - `venue-binance`
+- `venue-aster`
+- `venue-lighter`
+
+The active lead/lag configuration uses Binance as the lead market-data
+exchange and Aster and Lighter as lag exchanges. Binance is a signal source
+only: the strategy must not open positions there. Arbitrage positions are
+opened on Aster and/or Lighter. Hyperliquid is not an active venue because its
+order book is unavailable to this project; its existing adapter and ADRs are
+historical implementation records, not part of the active venue set.
 
 Each venue crate exposes whole-market adapters. The Binance adapter is split
 into paired depth and trade sessions because USDⓈ-M Futures routes those
@@ -91,9 +97,10 @@ to a dedicated recorder thread; an accepted event then enters the synchronous
 engine. Replay validates the complete capture before delivering those same
 events to the same engine entry point in Capture Sequence order.
 
-The MVP records full accepted L2 snapshots, public Market Trades, and Order
-Book and Trade Stream availability for BTC perpetual on Binance, Aster,
-Hyperliquid, and Lighter. Parquet is an immutable offline derivative for DuckDB and Polars, not
+The MVP records accepted L2 snapshots, public Market Trades, and Order
+Book and Trade Stream availability for BTC perpetual on Binance, Aster, and
+Lighter. Binance provides the lead observations, while Aster and Lighter
+provide lag observations. Parquet is an immutable offline derivative for DuckDB and Polars, not
 the replay source of truth. The exact contract, ownership, failure behavior,
 filesystem format, and acceptance criteria are specified in
 [the reproducible market-data pipeline design](docs/design/reproducible-market-data-pipeline.md).
@@ -112,18 +119,19 @@ the following before they are documented:
 - execution, hedging, reconciliation, and risk policies;
 - frontend-to-backend transport and authentication.
 
-The initial Hyperliquid snapshot contract is resolved in
-[ADR 0001](docs/adr/0001-hyperliquid-order-book-snapshots.md). The original
-development runner in [ADR 0002](docs/adr/0002-hyperliquid-live-console-runner.md)
-is superseded by the multi-market live-session boundary in
-[ADR 0003](docs/adr/0003-hyperliquid-multi-market-live-session.md). These
-decisions do not define the production transport. Lighter metadata resolution,
+The active venue roles and the exclusion of Hyperliquid are defined in
+[ADR 0010](docs/adr/0010-binance-lead-aster-lighter-lag.md). Historical
+Hyperliquid snapshot and session decisions remain in
+[ADR 0001](docs/adr/0001-hyperliquid-order-book-snapshots.md),
+[ADR 0002](docs/adr/0002-hyperliquid-live-console-runner.md), and
+[ADR 0003](docs/adr/0003-hyperliquid-multi-market-live-session.md); they do not
+define the active venue set. Lighter metadata resolution,
 incremental reconstruction, sequence recovery, and live-session ownership are
 resolved in [ADR 0004](docs/adr/0004-lighter-order-book-session.md).
 Aster Futures market resolution, partial-depth snapshot semantics, and session
 ownership are resolved in
 [ADR 0005](docs/adr/0005-aster-partial-depth-session.md).
-Binance Futures market resolution, top-20 partial-depth semantics, and session
+Binance Futures market resolution, top-10 partial-depth semantics, and session
 ownership are resolved in
 [ADR 0009](docs/adr/0009-binance-futures-partial-depth-session.md).
 The single shared Configured Market Set for every live venue is defined in

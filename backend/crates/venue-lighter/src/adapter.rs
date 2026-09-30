@@ -90,8 +90,9 @@ impl MarketDataAdapter for LighterAdapter {
         local_receive: LocalObservationTime,
         clock: &dyn ObservationClock,
     ) -> Vec<AdapterAction> {
-        let Ok(envelope) = decode_envelope(text) else {
-            return Vec::new();
+        let envelope = match decode_envelope(text) {
+            Ok(envelope) => envelope,
+            Err(error) => return invalid_message(error.to_string()),
         };
         match envelope.kind.as_str() {
             "connected" => {
@@ -113,17 +114,20 @@ impl MarketDataAdapter for LighterAdapter {
                 return self.handle_trades(envelope, local_receive, clock);
             }
             "subscribed/order_book" | "update/order_book" => {}
-            _ => return Vec::new(),
+            // Acknowledgements of the recovery unsubscribe carry no market data.
+            kind if kind.starts_with("unsubscribed/") => return Vec::new(),
+            kind => return invalid_message(format!("unexpected Lighter message type {kind}")),
         }
-        let Ok(market_id) = market_id_from_channel(&envelope.channel) else {
-            return Vec::new();
+        let market_id = match market_id_from_channel(&envelope.channel) {
+            Ok(market_id) => market_id,
+            Err(error) => return invalid_message(error.to_string()),
         };
         let Some(index) = self
             .markets
             .iter()
             .position(|market| market.market().market_id() == market_id)
         else {
-            return Vec::new();
+            return invalid_message(format!("Lighter frame for unconfigured market {market_id}"));
         };
         let key = MarketKey::new(index);
         match self.markets[index].apply_envelope(envelope, local_receive, clock) {
@@ -215,15 +219,18 @@ impl LighterAdapter {
         local_receive: LocalObservationTime,
         clock: &dyn ObservationClock,
     ) -> Vec<AdapterAction> {
-        let Ok(market_id) = market_id_from_trade_channel(&envelope.channel) else {
-            return Vec::new();
+        let market_id = match market_id_from_trade_channel(&envelope.channel) {
+            Ok(market_id) => market_id,
+            Err(error) => return invalid_message(error.to_string()),
         };
         let Some(index) = self
             .markets
             .iter()
             .position(|market| market.market().market_id() == market_id)
         else {
-            return Vec::new();
+            return invalid_message(format!(
+                "Lighter trades for unconfigured market {market_id}"
+            ));
         };
         let mut actions = Vec::new();
         for wire in envelope
@@ -547,6 +554,10 @@ enum TradeApplied {
         resumed: bool,
     },
     Duplicate,
+}
+
+fn invalid_message(reason: String) -> Vec<AdapterAction> {
+    vec![AdapterAction::InvalidMessage { reason }]
 }
 
 fn decode_envelope(message: &str) -> Result<WireEnvelope, AdapterError> {
@@ -998,5 +1009,31 @@ mod tests {
         );
         let actions = full.on_text(TRADES, received(1), &clock);
         assert!(matches!(actions.last(), Some(AdapterAction::Stop { .. })));
+    }
+
+    #[test]
+    fn reports_undecodable_and_unroutable_frames_as_invalid_messages() {
+        let mut adapter = whole_adapter();
+        let clock = Clock(Cell::new(1));
+        for frame in [
+            "{not json",
+            r#"{"type":"error","code":1}"#,
+            r#"{"type":"update/order_book","channel":"order_book:7"}"#,
+            r#"{"type":"update/trade","channel":"trade:x","trades":[]}"#,
+        ] {
+            assert!(matches!(
+                adapter.on_text(frame, received(1), &clock).as_slice(),
+                [AdapterAction::InvalidMessage { .. }]
+            ));
+        }
+        assert!(
+            adapter
+                .on_text(
+                    r#"{"type":"unsubscribed/order_book","channel":"order_book:1"}"#,
+                    received(2),
+                    &clock
+                )
+                .is_empty()
+        );
     }
 }

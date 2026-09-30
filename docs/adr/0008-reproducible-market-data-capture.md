@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted on 2026-09-18.
+Accepted on 2026-09-18. Its active venue-set clauses are superseded by
+[ADR 0010](0010-binance-lead-aster-lighter-lag.md).
 
 ## Context
 
@@ -14,8 +15,9 @@ one run, venue timestamps do not define a cross-venue order, and the three
 venues have different Order Book and public-trade semantics.
 
 The first dataset must remain small enough to inspect and explain. It targets a
-two-hour BTC perpetual capture from Binance, Aster, Hyperliquid, and Lighter on the
-existing VPS. Raw WebSocket frames, compression, automatic retention, funding,
+two-hour BTC perpetual capture from Binance, Aster, and Lighter on the existing
+VPS. Binance supplies lead observations; Aster and Lighter supply lag
+observations. Raw WebSocket frames, compression, automatic retention, funding,
 and private execution data are excluded from this MVP.
 
 ## Decision

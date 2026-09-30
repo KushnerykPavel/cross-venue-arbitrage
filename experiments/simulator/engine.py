@@ -34,7 +34,10 @@ class ExchangeSimulator:
         )
         self.next_order_id += 1
         self.orders.append(order)
-        if intent.order_type == "cancel":
+        if intent.venue in self.config.signal_only_venues:
+            order.status = "rejected"
+            order.rejection_reason = f"{intent.venue} is a signal-only venue"
+        elif intent.order_type == "cancel":
             self.cancel(intent.order_id, decision_time_ns)
             order.status = "cancel_requested"
         else:
@@ -53,6 +56,8 @@ class ExchangeSimulator:
     def on_market_event(self, event: MarketEvent) -> tuple[list[Fill], list[ExecutionEvent]]:
         if event.book is not None:
             self.books[event.venue] = event.book
+        elif event.invalidates_book:
+            self.books.pop(event.venue, None)
         fills: list[Fill] = []
         reports: list[ExecutionEvent] = []
         for order in self.pending:
@@ -161,6 +166,8 @@ class TraderSimulator:
                 visible_event = replace(source_event, local_time_ns=delivered_time)
                 if visible_event.book is not None:
                     self.visible_books[visible_event.venue] = visible_event.book
+                elif visible_event.invalidates_book:
+                    self.visible_books.pop(visible_event.venue, None)
                 intents = self.strategy.on_event(visible_event, self.visible_books, self.portfolio)
                 for intent in intents:
                     self.exchange.submit(intent, visible_event.local_time_ns)

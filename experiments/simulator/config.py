@@ -3,17 +3,18 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class SimulationConfig:
+    # ADR 0010: Binance is a lead/signal venue only. Its books are visible to the
+    # strategy, but no order or position may be created there.
+    signal_only_venues: frozenset[str] = frozenset({"binance"})
     initial_cash: float = 1_000_000.0
     order_latency_ns: dict[str, int] = field(default_factory=lambda: {
         "aster": 50_000_000,
         "binance": 50_000_000,
-        "hyperliquid": 50_000_000,
         "lighter": 50_000_000,
     })
     market_data_latency_ns: dict[str, int] = field(default_factory=lambda: {
         "aster": 0,
         "binance": 0,
-        "hyperliquid": 0,
         "lighter": 0,
     })
     stale_book_ns: int = 500_000_000
@@ -21,13 +22,11 @@ class SimulationConfig:
     taker_fee_bps: dict[str, float] = field(default_factory=lambda: {
         "aster": 5.0,
         "binance": 5.0,
-        "hyperliquid": 5.0,
         "lighter": 5.0,
     })
     slippage_bps: dict[str, float] = field(default_factory=lambda: {
         "aster": 0.0,
         "binance": 0.0,
-        "hyperliquid": 0.0,
         "lighter": 0.0,
     })
     max_position: float = 1.0

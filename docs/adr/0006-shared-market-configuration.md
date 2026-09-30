@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted on 2026-09-18. Supersedes the venue-specific configuration clauses in
-ADRs 0003, 0004, and 0005.
+Accepted on 2026-09-18. Its active venue-set clauses are superseded by
+[ADR 0010](0010-binance-lead-aster-lighter-lag.md). The shared ordered market
+list and validation contract remain in force for Binance, Aster, and Lighter.
 
 ## Context
 
@@ -14,8 +15,8 @@ duplicating identical local configuration.
 ## Decision
 
 - `MARKET_COINS` is the only market-list environment variable.
-- It contains one comma-separated Configured Market Set used by Aster,
-  Hyperliquid, and Lighter.
+- It contains one comma-separated Configured Market Set used by Binance, Aster,
+  and Lighter.
 - Entries are trimmed. Empty entries, remaining whitespace or control
   characters, and exact duplicates are rejected at startup. Case and
   punctuation are preserved.
@@ -30,6 +31,6 @@ duplicating identical local configuration.
 
 ## Consequences
 
-Every live run observes the same intended markets on all three venues. A future
-requirement for asymmetric venue coverage must explicitly replace this contract
-rather than introducing an undocumented fallback.
+Every active live run observes the same intended markets on Binance, Aster,
+and Lighter. Binance is the lead signal source; Aster and Lighter are lag
+venues. Hyperliquid is not in the active set.

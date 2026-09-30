@@ -94,18 +94,19 @@ impl MarketDataAdapter for AsterAdapter {
         local_receive: LocalObservationTime,
         clock: &dyn ObservationClock,
     ) -> Vec<AdapterAction> {
-        let Ok(envelope) = serde_json::from_str::<WireEnvelope>(text) else {
-            return Vec::new();
+        let envelope = match serde_json::from_str::<WireEnvelope>(text) {
+            Ok(envelope) => envelope,
+            Err(error) => return invalid_message(format!("undecodable Aster frame: {error}")),
         };
         let Some(symbol) = envelope.data.get("s").and_then(|symbol| symbol.as_str()) else {
-            return Vec::new();
+            return invalid_message("Aster frame has no symbol".into());
         };
         let Some(index) = self
             .markets
             .iter()
             .position(|market| market.market().symbol() == symbol)
         else {
-            return Vec::new();
+            return invalid_message(format!("Aster frame for unconfigured symbol {symbol}"));
         };
         if envelope.data.get("e").and_then(Value::as_str) == Some("aggTrade") {
             return match self.markets[index].apply_trade_payload(
@@ -164,7 +165,7 @@ impl MarketDataAdapter for AsterAdapter {
                         .clone(),
                 ),
             )],
-            Ok(Applied::No) => Vec::new(),
+            Ok(Applied::No) => invalid_message("unexpected Aster event type".into()),
             Err(error) => vec![AdapterAction::Publish(
                 NormalizedMarketEvent::OrderBookUnavailable(MarketDataUnavailable::new(
                     Venue::Aster,
@@ -216,6 +217,10 @@ impl MarketDataAdapter for AsterAdapter {
             .get(market.index())
             .map(|market| market.market().market_coin())
     }
+}
+
+fn invalid_message(reason: String) -> Vec<AdapterAction> {
+    vec![AdapterAction::InvalidMessage { reason }]
 }
 
 #[derive(Debug)]
@@ -375,6 +380,8 @@ struct WireBook {
     event_type: String,
     #[serde(rename = "E")]
     event_time: u64,
+    #[serde(rename = "T")]
+    transaction_time: Option<u64>,
     #[serde(rename = "s")]
     symbol: String,
     #[serde(rename = "u")]
@@ -392,19 +399,23 @@ fn decode_snapshot(
 ) -> Result<OrderBookSnapshot, AdapterError> {
     let bids = decode_levels(wire.bids, BookSide::Bid)?;
     let asks = decode_levels(wire.asks, BookSide::Ask)?;
+    let mut exchange_times = vec![ExchangeTimeObservation::new(
+        ExchangeTimeKind::EventTime,
+        wire.event_time,
+        ExchangeTimeUnit::Milliseconds,
+    )];
+    if let Some(transaction_time) = wire.transaction_time {
+        exchange_times.push(ExchangeTimeObservation::new(
+            ExchangeTimeKind::TransactionTime,
+            transaction_time,
+            ExchangeTimeUnit::Milliseconds,
+        ));
+    }
     OrderBookSnapshot::try_new(
         Venue::Aster,
         Symbol::perpetual(market.market_coin().clone()),
         Some(wire.final_update_id),
-        EventTimestamps::new(
-            vec![ExchangeTimeObservation::new(
-                ExchangeTimeKind::EventTime,
-                wire.event_time,
-                ExchangeTimeUnit::Milliseconds,
-            )],
-            local_receive,
-            local_receive,
-        ),
+        EventTimestamps::new(exchange_times, local_receive, local_receive),
         bids,
         asks,
     )
@@ -639,5 +650,45 @@ mod tests {
                 .as_slice(),
             [AdapterAction::Stop { .. }]
         ));
+    }
+
+    #[test]
+    fn depth_preserves_transaction_time() {
+        let mut adapter = adapter();
+        let actions = adapter.on_text(
+            SNAPSHOT,
+            LocalObservationTime::from_nanos_since_start(1),
+            &Clock(Cell::new(1)),
+        );
+        let [AdapterAction::Publish(NormalizedMarketEvent::OrderBookSnapshot(snapshot))] =
+            actions.as_slice()
+        else {
+            panic!("expected one snapshot");
+        };
+        assert_eq!(
+            snapshot.timestamps().exchange_times()[1],
+            ExchangeTimeObservation::new(
+                ExchangeTimeKind::TransactionTime,
+                9,
+                ExchangeTimeUnit::Milliseconds
+            )
+        );
+    }
+
+    #[test]
+    fn reports_undecodable_and_unroutable_frames_as_invalid_messages() {
+        let mut adapter = adapter();
+        let clock = Clock(Cell::new(1));
+        let now = LocalObservationTime::from_nanos_since_start(1);
+        for frame in [
+            "{not json",
+            r#"{"result":null,"id":1}"#,
+            r#"{"stream":"x","data":{"e":"depthUpdate","s":"SOLUSDT"}}"#,
+        ] {
+            assert!(matches!(
+                adapter.on_text(frame, now, &clock).as_slice(),
+                [AdapterAction::InvalidMessage { .. }]
+            ));
+        }
     }
 }

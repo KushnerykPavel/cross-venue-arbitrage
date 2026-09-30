@@ -20,6 +20,18 @@ def book(venue, sequence, bid, ask, time_ns, quantity=1.0):
     )
 
 
+class AlwaysBuy:
+    def __init__(self, venue):
+        self.venue = venue
+        self.sent = False
+
+    def on_event(self, event, state, portfolio):
+        if self.sent or self.venue not in state:
+            return []
+        self.sent = True
+        return [OrderIntent(self.venue, "buy", 1.0)]
+
+
 class OneShotArbitrage:
     def __init__(self):
         self.sent = False
@@ -118,10 +130,66 @@ def test_strategy_requires_latency_buffer_after_net_edge():
     assert result.orders == []
 
 
-def test_binance_taker_fee_is_explicitly_configured():
+def test_binance_is_a_signal_only_venue_by_default():
     config = SimulationConfig()
 
-    assert config.taker_fee_bps["binance"] == 5.0
-    assert config.order_latency_ns["binance"] == 50_000_000
+    assert config.signal_only_venues == frozenset({"binance"})
+    assert "hyperliquid" not in config.order_latency_ns
     assert config.market_data_latency_ns["binance"] == 0
-    assert config.slippage_bps["binance"] == 0.0
+
+
+def free_config():
+    return SimulationConfig(
+        taker_fee_bps={"aster": 0.0, "binance": 0.0, "lighter": 0.0},
+        minimum_net_edge_bps=0.0,
+        latency_buffer_bps=0.0,
+        max_order_quantity=1.0,
+    )
+
+
+def test_strategy_never_orders_on_binance():
+    config = free_config()
+    events = [book("binance", 1, 99.0, 100.0, 10), book("aster", 2, 101.0, 102.0, 20)]
+    result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
+    assert all(order.intent.venue != "binance" for order in result.orders)
+
+
+def test_exchange_rejects_orders_on_signal_only_venue():
+    config = free_config()
+    events = [book("binance", 1, 99.0, 100.0, 10), book("aster", 2, 99.0, 100.0, 20)]
+    result = Simulator(config).run(events, AlwaysBuy("binance"))
+    assert [order.status for order in result.orders] == ["rejected"]
+    assert result.fills == []
+
+
+def unavailable(venue, sequence, time_ns, stream):
+    return MarketEvent(
+        sequence, time_ns, "availability", venue,
+        availability_transition="unavailable", availability_stream=stream,
+    )
+
+
+def test_unavailable_book_is_not_used_until_next_snapshot():
+    config = free_config()
+    events = [
+        book("aster", 1, 99.0, 100.0, 10),
+        unavailable("aster", 2, 20, "order_book"),
+        book("lighter", 3, 101.0, 102.0, 30),
+    ]
+    result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
+    assert result.orders == []
+
+    events.append(book("aster", 4, 99.0, 100.0, 40))
+    result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
+    assert {order.intent.venue for order in result.orders} == {"aster", "lighter"}
+
+
+def test_trade_stream_outage_does_not_invalidate_the_book():
+    config = free_config()
+    events = [
+        book("aster", 1, 99.0, 100.0, 10),
+        unavailable("aster", 2, 20, "trade_stream"),
+        book("lighter", 3, 101.0, 102.0, 30),
+    ]
+    result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
+    assert {order.intent.venue for order in result.orders} == {"aster", "lighter"}

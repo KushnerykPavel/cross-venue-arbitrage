@@ -23,7 +23,7 @@ use crate::parquet_tables::{
     write_order_book_events,
 };
 
-const PARQUET_SCHEMA_VERSION: u32 = 2;
+const PARQUET_SCHEMA_VERSION: u32 = 3;
 const LEVEL_BATCH_ROWS: usize = 4_096;
 type TableWrite<Row> = fn(&Path, &[Row]) -> Result<(), Box<dyn Error>>;
 
@@ -283,6 +283,9 @@ fn export_into(
                             aggregate_trade_id: None,
                             first_trade_id: None,
                             last_trade_id: None,
+                            binance_aggregate_trade_id: None,
+                            binance_first_trade_id: None,
+                            binance_last_trade_id: None,
                             block_time: None,
                             trade_id_u64: None,
                             transaction_hash: None,
@@ -305,9 +308,9 @@ fn export_into(
                                 first_trade_id,
                                 last_trade_id,
                             } => {
-                                row.aggregate_trade_id = Some(*aggregate_trade_id);
-                                row.first_trade_id = Some(*first_trade_id);
-                                row.last_trade_id = Some(*last_trade_id);
+                                row.binance_aggregate_trade_id = Some(*aggregate_trade_id);
+                                row.binance_first_trade_id = Some(*first_trade_id);
+                                row.binance_last_trade_id = Some(*last_trade_id);
                             }
                             MarketTradeIdentity::Hyperliquid {
                                 block_time,
@@ -1063,7 +1066,7 @@ mod tests {
         assert_eq!(result.table_rows["exchange_times"], 2);
 
         let levels_path = output
-            .join("version=2/date=1970-01-01/event_type=order_book_levels")
+            .join("version=3/date=1970-01-01/event_type=order_book_levels")
             .join("venue=aster/market=BTC")
             .join(format!("part-{}.parquet", result.capture_id));
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(File::open(levels_path).unwrap())
@@ -1079,10 +1082,160 @@ mod tests {
         assert!(output.join("dataset-metadata.json").is_file());
         assert!(
             output
-                .join("version=2/date=1970-01-01/event_type=best_bid_offers")
+                .join("version=3/date=1970-01-01/event_type=best_bid_offers")
                 .join("venue=aster/market=BTC")
                 .join(format!("part-{}-000000.parquet", result.capture_id))
                 .is_file()
         );
+    }
+
+    fn read_single_batch(path: PathBuf) -> arrow_array::RecordBatch {
+        ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+    }
+
+    fn u64_column(batch: &arrow_array::RecordBatch, name: &str) -> Option<u64> {
+        use arrow_array::Array;
+        let column = batch
+            .column_by_name(name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        (!column.is_null(0)).then(|| column.value(0))
+    }
+
+    #[test]
+    fn exports_active_venues_with_binance_identity_and_lighter_top_ten() {
+        use market_data::{
+            AggressorSide, AggressorSideClassification, MarketTrade, MarketTradeKind,
+            MarketTradeReportingKind,
+        };
+
+        let data = TempDir::new().unwrap();
+        let datasets = TempDir::new().unwrap();
+        let started_at = UNIX_EPOCH + Duration::from_secs(1);
+        let mut capture = CaptureCoordinator::start(
+            CaptureSettings {
+                data_dir: data.path().to_path_buf(),
+                queue_capacity: NonZeroUsize::new(16).unwrap(),
+                segment_limits: SegmentLimits::default(),
+                metadata: CaptureMetadata {
+                    sanitized_configuration: BTreeMap::new(),
+                    git_commit: "test".into(),
+                    dirty_build: false,
+                    package_version: "test".into(),
+                    rust_target: "test".into(),
+                    collector_label: "test".into(),
+                    configured_markets: vec!["BTC".into()],
+                    resolved_venue_markets: Vec::new(),
+                },
+            },
+            started_at,
+        )
+        .unwrap();
+        let capture_directory = capture.capture_directory().to_path_buf();
+        let symbol = Symbol::perpetual(MarketCoin::try_new("BTC").unwrap());
+        let timestamps = || {
+            EventTimestamps::new(
+                vec![ExchangeTimeObservation::new(
+                    ExchangeTimeKind::EventTime,
+                    1,
+                    ExchangeTimeUnit::Milliseconds,
+                )],
+                LocalObservationTime::from_nanos_since_start(2),
+                LocalObservationTime::from_nanos_since_start(3),
+            )
+        };
+        let level = |price: i64| {
+            BookLevel::new(
+                Price::from_str(&price.to_string()).unwrap(),
+                Quantity::from_str("1").unwrap(),
+                None,
+            )
+        };
+        let lighter = OrderBookSnapshot::try_new(
+            Venue::Lighter,
+            symbol.clone(),
+            Some(5),
+            timestamps(),
+            (0..12).map(|offset| level(100 - offset)).collect(),
+            (0..12).map(|offset| level(101 + offset)).collect(),
+        )
+        .unwrap();
+        let trade = |venue, identity| {
+            MarketTrade::new(
+                venue,
+                symbol.clone(),
+                timestamps(),
+                Price::from_str("100.5").unwrap(),
+                Quantity::from_str("0.004").unwrap(),
+                MarketTradeReportingKind::TakerOrderAggregate,
+                MarketTradeKind::Regular,
+                AggressorSide::Buy,
+                AggressorSideClassification::DerivedFromMakerSide,
+                identity,
+            )
+        };
+        capture
+            .accept(NormalizedMarketEvent::OrderBookSnapshot(lighter))
+            .unwrap();
+        capture
+            .accept(NormalizedMarketEvent::MarketTrade(trade(
+                Venue::Binance,
+                MarketTradeIdentity::Binance {
+                    aggregate_trade_id: 91,
+                    first_trade_id: 700,
+                    last_trade_id: 703,
+                },
+            )))
+            .unwrap();
+        capture
+            .accept(NormalizedMarketEvent::MarketTrade(trade(
+                Venue::Aster,
+                MarketTradeIdentity::Aster {
+                    aggregate_trade_id: 5,
+                    first_trade_id: 6,
+                    last_trade_id: 7,
+                },
+            )))
+            .unwrap();
+        capture
+            .finish(CaptureStatus::Complete, started_at + Duration::from_secs(1))
+            .unwrap();
+
+        let output = datasets.path().join("dataset");
+        let result = export_capture(ExportRequest {
+            capture_directory,
+            output_directory: output.clone(),
+            allow_incomplete: false,
+        })
+        .unwrap();
+        assert_eq!(result.canonical_event_count, 3);
+        assert_eq!(result.table_rows["order_book_events"], 1);
+        assert_eq!(result.table_rows["market_trades"], 2);
+        assert_eq!(result.table_rows["order_book_levels"], 20);
+
+        let trades = |venue: &str| {
+            read_single_batch(
+                output
+                    .join("version=3/date=1970-01-01/event_type=market_trades")
+                    .join(format!("venue={venue}/market=BTC"))
+                    .join(format!("part-{}-000000.parquet", result.capture_id)),
+            )
+        };
+        let binance = trades("binance");
+        assert_eq!(u64_column(&binance, "binance_aggregate_trade_id"), Some(91));
+        assert_eq!(u64_column(&binance, "binance_first_trade_id"), Some(700));
+        assert_eq!(u64_column(&binance, "binance_last_trade_id"), Some(703));
+        assert_eq!(u64_column(&binance, "aster_aggregate_trade_id"), None);
+        let aster = trades("aster");
+        assert_eq!(u64_column(&aster, "aster_aggregate_trade_id"), Some(5));
+        assert_eq!(u64_column(&aster, "binance_aggregate_trade_id"), None);
     }
 }

@@ -35,8 +35,12 @@ class CrossVenueArbitrageStrategy:
             and book.best_bid and book.best_ask
         }
         best: tuple[float, float, str, str, int] | None = None
-        for buy_venue, buy_book in books.items():
-            for sell_venue, sell_book in books.items():
+        tradable = {
+            venue: book for venue, book in books.items()
+            if venue not in self.config.signal_only_venues
+        }
+        for buy_venue, buy_book in tradable.items():
+            for sell_venue, sell_book in tradable.items():
                 if buy_venue == sell_venue:
                     continue
                 quote_skew_ns = abs(buy_book.local_time_ns - sell_book.local_time_ns)

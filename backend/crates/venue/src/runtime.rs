@@ -35,9 +35,18 @@ pub enum AdapterAction {
     SendPing(Vec<u8>),
     MarketSubscribed(MarketKey),
     TradeDeduplicated(MarketKey),
+    /// A frame that cannot be decoded or routed to a configured market. It is
+    /// counted as a data-quality observation; it is not a normalized event.
+    InvalidMessage {
+        reason: String,
+    },
     Publish(NormalizedMarketEvent),
-    Reconnect { reason: String },
-    Stop { reason: String },
+    Reconnect {
+        reason: String,
+    },
+    Stop {
+        reason: String,
+    },
 }
 
 pub trait MarketDataAdapter {
@@ -76,12 +85,20 @@ pub enum LiveSessionEvent<'a> {
         venue: Venue,
         market_coin: &'a MarketCoin,
     },
+    /// Every normalized event published by one adapter callback (one frame, one
+    /// heartbeat, or one disconnect), in adapter order. The handler receives the
+    /// whole batch at once so that it can assign consecutive Capture Sequence
+    /// values without interleaving events from another session.
     MarketData {
-        event: NormalizedMarketEvent,
+        events: Vec<NormalizedMarketEvent>,
     },
     TradeDeduplicated {
         venue: Venue,
         market_coin: &'a MarketCoin,
+    },
+    InvalidMessage {
+        venue: Venue,
+        reason: String,
     },
     Disconnected {
         venue: Venue,
@@ -320,55 +337,103 @@ where
     S: TransportConnection,
     F: for<'event> FnMut(LiveSessionEvent<'event>) -> std::io::Result<()>,
 {
+    let mut batch = FrameBatch::default();
     for action in actions {
         match action {
-            AdapterAction::SendText(text) => {
-                if let Err(error) = connection.send(OutgoingFrame::Text(text)).await {
-                    return ActionOutcome::TransportFailure(format!(
-                        "transport send failed: {error}"
-                    ));
-                }
-            }
-            AdapterAction::SendPing(payload) => {
-                if let Err(error) = connection.send(OutgoingFrame::Ping(payload)).await {
-                    return ActionOutcome::TransportFailure(format!(
-                        "transport send failed: {error}"
-                    ));
-                }
-            }
-            AdapterAction::MarketSubscribed(market) => {
-                let market_coin = adapter
-                    .market_coin(market)
-                    .expect("adapter action references a configured market");
-                if let Err(error) = on_event(LiveSessionEvent::MarketSubscribed {
-                    venue: adapter.venue(),
-                    market_coin,
-                }) {
+            AdapterAction::Publish(event) => batch.events.push(event),
+            AdapterAction::TradeDeduplicated(market) => batch.deduplicated.push(market),
+            AdapterAction::InvalidMessage { reason } => batch.invalid.push(reason),
+            action => {
+                if let Err(error) = batch.flush(adapter, reconnect_delay, on_event) {
                     return ActionOutcome::Stop(error.to_string());
                 }
-            }
-            AdapterAction::TradeDeduplicated(market) => {
-                let market_coin = adapter
-                    .market_coin(market)
-                    .expect("adapter action references a configured market");
-                if let Err(error) = on_event(LiveSessionEvent::TradeDeduplicated {
-                    venue: adapter.venue(),
-                    market_coin,
-                }) {
-                    return ActionOutcome::Stop(error.to_string());
+                match action {
+                    AdapterAction::SendText(text) => {
+                        if let Err(error) = connection.send(OutgoingFrame::Text(text)).await {
+                            return ActionOutcome::TransportFailure(format!(
+                                "transport send failed: {error}"
+                            ));
+                        }
+                    }
+                    AdapterAction::SendPing(payload) => {
+                        if let Err(error) = connection.send(OutgoingFrame::Ping(payload)).await {
+                            return ActionOutcome::TransportFailure(format!(
+                                "transport send failed: {error}"
+                            ));
+                        }
+                    }
+                    AdapterAction::MarketSubscribed(market) => {
+                        let market_coin = adapter
+                            .market_coin(market)
+                            .expect("adapter action references a configured market");
+                        if let Err(error) = on_event(LiveSessionEvent::MarketSubscribed {
+                            venue: adapter.venue(),
+                            market_coin,
+                        }) {
+                            return ActionOutcome::Stop(error.to_string());
+                        }
+                    }
+                    AdapterAction::Reconnect { reason } => return ActionOutcome::Reconnect(reason),
+                    AdapterAction::Stop { reason } => return ActionOutcome::Stop(reason),
+                    AdapterAction::Publish(_)
+                    | AdapterAction::TradeDeduplicated(_)
+                    | AdapterAction::InvalidMessage { .. } => {
+                        unreachable!("batched actions are handled above")
+                    }
                 }
             }
-            AdapterAction::Publish(event) => {
-                *reconnect_delay = INITIAL_RECONNECT_DELAY;
-                if let Err(error) = on_event(LiveSessionEvent::MarketData { event }) {
-                    return ActionOutcome::Stop(error.to_string());
-                }
-            }
-            AdapterAction::Reconnect { reason } => return ActionOutcome::Reconnect(reason),
-            AdapterAction::Stop { reason } => return ActionOutcome::Stop(reason),
         }
     }
+    if let Err(error) = batch.flush(adapter, reconnect_delay, on_event) {
+        return ActionOutcome::Stop(error.to_string());
+    }
     ActionOutcome::Continue
+}
+
+/// Normalized events and quality notifications accumulated from consecutive
+/// adapter actions. Publishing is delivered as one `MarketData` batch before
+/// the notifications, and before any action with an external side effect.
+#[derive(Default)]
+struct FrameBatch {
+    events: Vec<NormalizedMarketEvent>,
+    deduplicated: Vec<MarketKey>,
+    invalid: Vec<String>,
+}
+
+impl FrameBatch {
+    fn flush<A, F>(
+        &mut self,
+        adapter: &A,
+        reconnect_delay: &mut Duration,
+        on_event: &mut F,
+    ) -> std::io::Result<()>
+    where
+        A: MarketDataAdapter,
+        F: for<'event> FnMut(LiveSessionEvent<'event>) -> std::io::Result<()>,
+    {
+        if !self.events.is_empty() {
+            *reconnect_delay = INITIAL_RECONNECT_DELAY;
+            on_event(LiveSessionEvent::MarketData {
+                events: std::mem::take(&mut self.events),
+            })?;
+        }
+        for market in self.deduplicated.drain(..) {
+            let market_coin = adapter
+                .market_coin(market)
+                .expect("adapter action references a configured market");
+            on_event(LiveSessionEvent::TradeDeduplicated {
+                venue: adapter.venue(),
+                market_coin,
+            })?;
+        }
+        for reason in self.invalid.drain(..) {
+            on_event(LiveSessionEvent::InvalidMessage {
+                venue: adapter.venue(),
+                reason,
+            })?;
+        }
+        Ok(())
+    }
 }
 
 enum ActionOutcome {
@@ -385,6 +450,7 @@ fn publish_disconnect_actions<F>(
 where
     F: for<'event> FnMut(LiveSessionEvent<'event>) -> std::io::Result<()>,
 {
+    let mut events = Vec::with_capacity(actions.len());
     for action in actions {
         let AdapterAction::Publish(event) = action else {
             debug_assert!(
@@ -393,9 +459,12 @@ where
             );
             continue;
         };
-        on_event(LiveSessionEvent::MarketData { event })?;
+        events.push(event);
     }
-    Ok(())
+    if events.is_empty() {
+        return Ok(());
+    }
+    on_event(LiveSessionEvent::MarketData { events })
 }
 
 enum ConnectionOutcome {
@@ -509,6 +578,30 @@ mod tests {
                 return vec![AdapterAction::Stop {
                     reason: "dedup capacity exceeded".into(),
                 }];
+            }
+            if text == "garbage" {
+                return vec![AdapterAction::InvalidMessage {
+                    reason: "undecodable frame".into(),
+                }];
+            }
+            if text == "frame" {
+                let unavailable = || {
+                    AdapterAction::Publish(NormalizedMarketEvent::TradeStreamUnavailable(
+                        MarketDataUnavailable::new(
+                            Venue::Hyperliquid,
+                            self.coin.clone(),
+                            local_receive,
+                            UnavailabilityCategory::InvalidMarketData,
+                            "fixture",
+                        ),
+                    ))
+                };
+                return vec![
+                    unavailable(),
+                    AdapterAction::TradeDeduplicated(MarketKey::new(0)),
+                    unavailable(),
+                    AdapterAction::SendText("after-frame".into()),
+                ];
             }
             let level = BookLevel::new(
                 "100".parse::<Price>().unwrap(),
@@ -646,24 +739,31 @@ mod tests {
                 LiveSessionEvent::Connecting { .. } => events.push("connecting"),
                 LiveSessionEvent::Connected { .. } => events.push("connected"),
                 LiveSessionEvent::MarketSubscribed { .. } => events.push("subscribed"),
-                LiveSessionEvent::MarketData { event } => match event {
-                    NormalizedMarketEvent::OrderBookSnapshot(snapshot) => {
-                        events.push("updated");
-                        assert!(
-                            snapshot.timestamps().processing_completed()
-                                > snapshot.timestamps().local_receive()
-                        );
-                        if let Some(sender) = stop_tx.take() {
-                            let _ = sender.send(());
+                LiveSessionEvent::MarketData { events: batch } => {
+                    for event in batch {
+                        match event {
+                            NormalizedMarketEvent::OrderBookSnapshot(snapshot) => {
+                                events.push("updated");
+                                assert!(
+                                    snapshot.timestamps().processing_completed()
+                                        > snapshot.timestamps().local_receive()
+                                );
+                                if let Some(sender) = stop_tx.take() {
+                                    let _ = sender.send(());
+                                }
+                            }
+                            NormalizedMarketEvent::OrderBookUnavailable(_) => {
+                                events.push("unavailable");
+                            }
+                            _ => panic!("unexpected normalized event"),
                         }
                     }
-                    NormalizedMarketEvent::OrderBookUnavailable(_) => {
-                        events.push("unavailable");
-                    }
-                    _ => panic!("unexpected normalized event"),
-                },
+                }
                 LiveSessionEvent::TradeDeduplicated { .. } => {
                     panic!("fake adapter does not deduplicate trades")
+                }
+                LiveSessionEvent::InvalidMessage { .. } => {
+                    panic!("fake adapter does not report invalid messages")
                 }
                 LiveSessionEvent::Disconnected { .. } => events.push("disconnected"),
             }
@@ -687,6 +787,48 @@ mod tests {
             ]
         );
         assert_eq!(sent.borrow().as_slice(), ["subscribe", "subscribe"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delivers_one_frame_as_one_batch_before_notifications_and_sends() {
+        let mut adapter = FakeAdapter::new();
+        let clock = FakeClock::default();
+        let mut transport = ScriptedTransport::new(vec![vec![
+            IncomingFrame::Text("frame".into()),
+            IncomingFrame::Text("garbage".into()),
+            IncomingFrame::Text("stop".into()),
+        ]]);
+        let sent = Rc::clone(&transport.sent);
+        let mut observed = Vec::new();
+        let shutdown: ShutdownSignal = Box::pin(std::future::pending());
+        let _ = run_with_transport(&mut adapter, &clock, &mut transport, shutdown, |event| {
+            match event {
+                LiveSessionEvent::MarketData { events } => {
+                    observed.push(format!("batch:{}", events.len()));
+                }
+                LiveSessionEvent::TradeDeduplicated { .. } => observed.push("dedup".into()),
+                LiveSessionEvent::InvalidMessage { reason, .. } => {
+                    observed.push(format!("invalid:{reason}"));
+                }
+                LiveSessionEvent::MarketSubscribed { .. } => {
+                    observed.push(format!("subscribed:{}", sent.borrow().len()));
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+        .await;
+
+        assert_eq!(
+            observed,
+            [
+                "subscribed:1",
+                "batch:2",
+                "dedup",
+                "invalid:undecodable frame"
+            ]
+        );
+        assert_eq!(sent.borrow().as_slice(), ["subscribe", "after-frame"]);
     }
 
     #[tokio::test(start_paused = true)]

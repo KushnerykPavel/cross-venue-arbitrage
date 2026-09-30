@@ -8,13 +8,19 @@ research, replay and eventually execution engine in Rust.
 Initial scope:
 
 -   instrument: BTC perpetual;
--   venues: Binance, Hyperliquid, Lighter;
+-   venues: Binance as the lead market-data venue; Aster and Lighter as lag
+    venues for arbitrage;
 -   first research strategy: cross-venue lead/lag;
 -   later strategy: market making using external fair value.
 
 This is also an HFT engineering learning project. Code quality, explicit
 reasoning, observability, determinism and understanding are more
 important than producing a large amount of code quickly.
+
+Binance is used as a lead signal source only; the strategy must not open
+positions on Binance. Arbitrage positions are opened on Aster and/or Lighter.
+Hyperliquid is not an active venue because its order book is unavailable to
+this project.
 
 ## 2. Authority
 

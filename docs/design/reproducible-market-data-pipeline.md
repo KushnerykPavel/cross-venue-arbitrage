@@ -1,5 +1,11 @@
 # Reproducible Market-Data Pipeline
 
+> **Active venue scope:** [ADR 0010](../adr/0010-binance-lead-aster-lighter-lag.md)
+> defines Binance as the lead market-data venue and Aster and Lighter as lag
+> venues. Hyperliquid is excluded because its order book is unavailable to this
+> project. Hyperliquid-specific implementation details below are retained as
+> historical design context only and are not part of the active capture plan.
+
 ## Purpose
 
 This document specifies the first reproducible data pipeline for quantitative
@@ -128,7 +134,11 @@ reset rolling trade-flow state across a trade-stream interruption.
 Each venue-reported array element becomes one `MarketTrade`, preserving array
 order. All elements decoded from the same frame share Local Receive Time and
 receive consecutive Capture Sequence values; Processing Completion Time is
-sampled for each completed normalized event.
+sampled for each completed normalized event. The runtime delivers all events
+published by one adapter callback as one `MarketData` batch, and `trader`
+assigns Capture Sequence and runs the engine for the whole batch under one
+lock, so events from concurrent venue sessions cannot interleave inside a
+frame.
 
 ```text
 reporting_kind:
@@ -161,6 +171,7 @@ Venue rules:
 | Venue | Reporting | Identity and deduplication | Additional rules |
 |---|---|---|---|
 | Aster | `TakerOrderAggregate` | `(market, aggregate_trade_id)`; retain first and last underlying trade IDs | Never invent constituent trades |
+| Binance | `TakerOrderAggregate` | `(market, aggregate_trade_id)`; retain first and last underlying trade IDs (`a`, `f`, `l`) | Never invent constituent trades |
 | Hyperliquid | `Individual` elements from a batch | `(market, block_time, trade_id)`; retain transaction hash | No documented gap-free resume |
 | Lighter | `Individual` elements from ordinary and liquidation arrays | `(market_id, trade_id_string)`; retain optional message nonce | Preserve regular, liquidation, deleverage, and market-settlement kinds |
 
@@ -305,8 +316,10 @@ Postcard, framing, or Capture Sequence failure invalidates that record and the
 entire tail after it.
 
 Recovery also reconciles a valid next-index `.log` that was renamed before a
-crash but not yet added to the manifest. Any other unlisted `.log` remains an
-integrity error rather than being adopted implicitly.
+crash but not yet added to the manifest, and then continues with the following
+index, so the `.open` segment created by that rotation is recovered in the same
+pass. Any other unlisted `.log` remains an integrity error rather than being
+adopted implicitly.
 
 ## Shutdown
 
@@ -355,7 +368,10 @@ record count, byte size, SHA-256, UTC start/end, and completion status.
 `capture_status=complete` means the recorder retained every event it accepted.
 It does not claim uninterrupted venue delivery. Data-quality counters include
 disconnects, Order Book unavailable intervals, trade-stream gaps, invalid
-messages, and deduplicated trades.
+messages, and deduplicated trades. `invalid_messages` counts both
+`InvalidMarketData` unavailability events and frames an adapter cannot decode
+or route to a configured market; the latter are reported through the runtime's
+`InvalidMessage` notification and do not change Order Book state.
 
 ## Validated replay
 
@@ -400,11 +416,11 @@ Quantity columns use exact `DECIMAL(38,18)`. Conversion pads scale with zeros
 without rounding; overflow or any inexact value fails the export. No canonical
 or analytical monetary column uses `DOUBLE`.
 
-New datasets use schema version 2 and the following partition layout:
+New datasets use schema version 3 and the following partition layout:
 
 ```text
 parquet/
-  version=2/
+  version=3/
     date=YYYY-MM-DD/
       event_type=<type>/
         venue=<venue>/
@@ -416,8 +432,11 @@ Every row retains `capture_id`; Capture Run is not a partition key. Dataset
 metadata records source Capture IDs, source manifest SHA-256 values, converter
 schema version, converter Git commit, and UTC conversion time. Conversion
 always creates a new dataset and never modifies canonical captures. Existing
-version 1 datasets remain immutable and readable; only newly exported datasets
-use version 2 and include `best_bid_offers`.
+version 1 and 2 datasets remain immutable and readable. Version 2 introduced
+`best_bid_offers`. Version 3 adds `binance_aggregate_trade_id`,
+`binance_first_trade_id`, and `binance_last_trade_id` to `market_trades`;
+version 2 wrote Binance aggregate identities into the `aster_*` columns, so
+version 2 rows must be disambiguated by `venue`.
 
 ## MVP limits and acceptance
 

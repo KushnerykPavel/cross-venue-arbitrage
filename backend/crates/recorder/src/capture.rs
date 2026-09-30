@@ -204,6 +204,12 @@ impl CaptureCoordinator {
         Ok(())
     }
 
+    pub fn observe_invalid_message(&mut self) -> Result<(), CaptureCoordinatorError> {
+        self.check_writer_status()?;
+        self.data_quality.invalid_messages = self.data_quality.invalid_messages.saturating_add(1);
+        Ok(())
+    }
+
     pub const fn capture_id(&self) -> Uuid {
         self.capture_id
     }
@@ -251,44 +257,58 @@ fn recover_interrupted_captures(
         if manifest.capture_status != CaptureStatus::IncompleteProcessCrash {
             continue;
         }
-        let index = u32::try_from(manifest.segments.len()).map_err(|_| {
-            CaptureCoordinatorError::WriterFailed("recovery segment index overflow".into())
-        })?;
-        let open_path = directory.join(format!("segment-{index:06}.open"));
-        let log_path = directory.join(format!("segment-{index:06}.log"));
-        if log_path.exists() {
-            let read = read_segment(&log_path, manifest.capture_id, index)
-                .map_err(|error| CaptureCoordinatorError::WriterFailed(error.to_string()))?;
-            let ended_at = log_path
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(recovered_at);
-            manifest.add_segment(FinalizedSegment {
-                index,
-                filename: format!("segment-{index:06}.log"),
-                first_capture_sequence: read.events[0].capture_sequence(),
-                last_capture_sequence: read
-                    .events
-                    .last()
-                    .expect("read_segment rejects empty segments")
-                    .capture_sequence(),
-                record_count: u64::try_from(read.events.len()).map_err(|_| {
-                    CaptureCoordinatorError::WriterFailed("recovery record count overflow".into())
-                })?,
-                byte_size: read.byte_size,
-                sha256: read.sha256,
-                started_at_unix_millis: read.created_at_unix_millis,
-                ended_at_unix_millis: unix_millis(ended_at).map_err(map_writer_error)?,
-                completion: SegmentCompletion::RecoveredAfterCrash,
-            });
-        } else if open_path.exists() {
-            match recover_open_segment(&open_path, manifest.capture_id, index, recovered_at)
-                .map_err(|error| CaptureCoordinatorError::WriterFailed(error.to_string()))?
-            {
-                RecoveryOutcome::Finalized { segment, .. } => manifest.add_segment(segment),
-                RecoveryOutcome::DiscardedEmpty { .. } => {}
+        // A crash between a rotation rename and the manifest update leaves the
+        // renamed `.log` unlisted and the next `.open` active, so recovery
+        // continues index by index until neither file exists.
+        let mut recovered_any = false;
+        loop {
+            let index = u32::try_from(manifest.segments.len()).map_err(|_| {
+                CaptureCoordinatorError::WriterFailed("recovery segment index overflow".into())
+            })?;
+            let open_path = directory.join(format!("segment-{index:06}.open"));
+            let log_path = directory.join(format!("segment-{index:06}.log"));
+            if log_path.exists() {
+                let read = read_segment(&log_path, manifest.capture_id, index)
+                    .map_err(|error| CaptureCoordinatorError::WriterFailed(error.to_string()))?;
+                let ended_at = log_path
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(recovered_at);
+                manifest.add_segment(FinalizedSegment {
+                    index,
+                    filename: format!("segment-{index:06}.log"),
+                    first_capture_sequence: read.events[0].capture_sequence(),
+                    last_capture_sequence: read
+                        .events
+                        .last()
+                        .expect("read_segment rejects empty segments")
+                        .capture_sequence(),
+                    record_count: u64::try_from(read.events.len()).map_err(|_| {
+                        CaptureCoordinatorError::WriterFailed(
+                            "recovery record count overflow".into(),
+                        )
+                    })?,
+                    byte_size: read.byte_size,
+                    sha256: read.sha256,
+                    started_at_unix_millis: read.created_at_unix_millis,
+                    ended_at_unix_millis: unix_millis(ended_at).map_err(map_writer_error)?,
+                    completion: SegmentCompletion::RecoveredAfterCrash,
+                });
+                recovered_any = true;
+            } else if open_path.exists() {
+                match recover_open_segment(&open_path, manifest.capture_id, index, recovered_at)
+                    .map_err(|error| CaptureCoordinatorError::WriterFailed(error.to_string()))?
+                {
+                    RecoveryOutcome::Finalized { segment, .. } => manifest.add_segment(segment),
+                    RecoveryOutcome::DiscardedEmpty { .. } => {}
+                }
+                recovered_any = true;
+                break;
+            } else {
+                break;
             }
-        } else {
+        }
+        if !recovered_any {
             continue;
         }
         manifest.utc_end_unix_millis = Some(unix_millis(recovered_at).map_err(map_writer_error)?);
@@ -607,5 +627,71 @@ mod tests {
         new_capture
             .finish(CaptureStatus::Complete, started_at + Duration::from_secs(3))
             .unwrap();
+    }
+
+    #[test]
+    fn recovery_adopts_unlisted_rotated_log_and_the_following_open_segment() {
+        let data_dir = TempDir::new().unwrap();
+        let old_capture_id = Uuid::new_v4();
+        let old_directory = data_dir
+            .path()
+            .join("captures")
+            .join(old_capture_id.to_string());
+        fs::create_dir_all(&old_directory).unwrap();
+        let started_at = UNIX_EPOCH + Duration::from_secs(1);
+        CaptureManifest::new(
+            old_capture_id,
+            unix_millis(started_at).unwrap(),
+            4,
+            SegmentLimits::default(),
+            metadata(),
+        )
+        .unwrap()
+        .write_atomic(&old_directory)
+        .unwrap();
+        let mut writer = SegmentWriter::create(
+            &old_directory,
+            old_capture_id,
+            SegmentLimits::new(
+                Duration::from_secs(1),
+                std::num::NonZeroU64::new(u64::MAX).unwrap(),
+                Duration::from_secs(60),
+            ),
+        )
+        .unwrap();
+        writer
+            .append(
+                &StoredEventV1::from_normalized(1, &event(1)).unwrap(),
+                started_at,
+            )
+            .unwrap();
+        // Rotation renames segment 0 and opens segment 1; the crash happens
+        // before the manifest lists segment 0.
+        let rotated = writer
+            .append(
+                &StoredEventV1::from_normalized(2, &event(2)).unwrap(),
+                started_at + Duration::from_secs(2),
+            )
+            .unwrap();
+        assert!(rotated.is_some());
+        drop(writer);
+
+        CaptureCoordinator::start(
+            CaptureSettings {
+                data_dir: data_dir.path().to_path_buf(),
+                queue_capacity: NonZeroUsize::new(4).unwrap(),
+                segment_limits: SegmentLimits::default(),
+                metadata: metadata(),
+            },
+            started_at + Duration::from_secs(3),
+        )
+        .unwrap()
+        .finish(CaptureStatus::Complete, started_at + Duration::from_secs(4))
+        .unwrap();
+
+        let recovered = CaptureManifest::read(&old_directory).unwrap();
+        assert_eq!(recovered.segments.len(), 2);
+        assert_eq!(recovered.segments[1].first_capture_sequence, 2);
+        assert!(!old_directory.join("segment-000001.open").exists());
     }
 }

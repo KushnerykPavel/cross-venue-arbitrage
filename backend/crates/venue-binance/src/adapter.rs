@@ -21,6 +21,7 @@ use crate::metadata::{BinanceMarket, MetadataError, resolve_markets};
 
 const BINANCE_PUBLIC_WS_BASE_URL: &str = "wss://fstream.binance.com/public/stream?streams=";
 const BINANCE_MARKET_WS_BASE_URL: &str = "wss://fstream.binance.com/market/stream?streams=";
+const MAX_LEVELS_PER_SIDE: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BinanceFeed {
@@ -125,25 +126,26 @@ impl MarketDataAdapter for BinanceAdapter {
         local_receive: LocalObservationTime,
         clock: &dyn ObservationClock,
     ) -> Vec<AdapterAction> {
-        let Ok(envelope) = serde_json::from_str::<WireEnvelope>(text) else {
-            return Vec::new();
+        let envelope = match serde_json::from_str::<WireEnvelope>(text) {
+            Ok(envelope) => envelope,
+            Err(error) => return invalid_message(format!("undecodable Binance frame: {error}")),
         };
         let Some(symbol) = envelope.data.get("s").and_then(Value::as_str) else {
-            return Vec::new();
+            return invalid_message("Binance frame has no symbol".into());
         };
         let Some(index) = self
             .markets
             .iter()
             .position(|market| market.market().symbol() == symbol)
         else {
-            return Vec::new();
+            return invalid_message(format!("Binance frame for unconfigured symbol {symbol}"));
         };
         match self.feed {
             BinanceFeed::Trades => {
                 if envelope.data.get("e").and_then(Value::as_str) == Some("aggTrade") {
                     self.handle_trade(index, envelope.data, local_receive, clock)
                 } else {
-                    Vec::new()
+                    invalid_message("unexpected event type on Binance trade stream".into())
                 }
             }
             BinanceFeed::Depth => {
@@ -157,7 +159,9 @@ impl MarketDataAdapter for BinanceAdapter {
                                 .clone(),
                         ),
                     )],
-                    Ok(false) => Vec::new(),
+                    Ok(false) => {
+                        invalid_message("unexpected event type on Binance depth stream".into())
+                    }
                     Err(error) => vec![AdapterAction::Publish(
                         NormalizedMarketEvent::OrderBookUnavailable(MarketDataUnavailable::new(
                             Venue::Binance,
@@ -216,6 +220,10 @@ impl MarketDataAdapter for BinanceAdapter {
             .get(market.index())
             .map(|market| market.market().market_coin())
     }
+}
+
+fn invalid_message(reason: String) -> Vec<AdapterAction> {
+    vec![AdapterAction::InvalidMessage { reason }]
 }
 
 impl BinanceAdapter {
@@ -415,6 +423,7 @@ enum AdapterError {
     UnexpectedSymbol { expected: String, actual: String },
     InvalidPrice(DecimalParseError),
     InvalidQuantity(DecimalParseError),
+    TooManyLevels { actual: usize, maximum: usize },
     InvalidSnapshot(SnapshotValidationError),
     IdentityMismatch(OrderBookIdentityError),
     TradeDedupCapacityExceeded { capacity: usize },
@@ -431,6 +440,8 @@ struct WireBook {
     event_type: String,
     #[serde(rename = "E")]
     event_time: u64,
+    #[serde(rename = "T")]
+    transaction_time: Option<u64>,
     #[serde(rename = "s")]
     symbol: String,
     #[serde(rename = "u")]
@@ -470,6 +481,26 @@ fn decode_snapshot(
     market: &BinanceMarket,
     local_receive: LocalObservationTime,
 ) -> Result<OrderBookSnapshot, AdapterError> {
+    for side in [&wire.bids, &wire.asks] {
+        if side.len() > MAX_LEVELS_PER_SIDE {
+            return Err(AdapterError::TooManyLevels {
+                actual: side.len(),
+                maximum: MAX_LEVELS_PER_SIDE,
+            });
+        }
+    }
+    let mut exchange_times = vec![ExchangeTimeObservation::new(
+        ExchangeTimeKind::EventTime,
+        wire.event_time,
+        ExchangeTimeUnit::Milliseconds,
+    )];
+    if let Some(transaction_time) = wire.transaction_time {
+        exchange_times.push(ExchangeTimeObservation::new(
+            ExchangeTimeKind::TransactionTime,
+            transaction_time,
+            ExchangeTimeUnit::Milliseconds,
+        ));
+    }
     let decode = |levels: Vec<[String; 2]>| {
         levels
             .into_iter()
@@ -488,15 +519,7 @@ fn decode_snapshot(
         Venue::Binance,
         Symbol::perpetual(market.market_coin().clone()),
         Some(wire.final_update_id),
-        EventTimestamps::new(
-            vec![ExchangeTimeObservation::new(
-                ExchangeTimeKind::EventTime,
-                wire.event_time,
-                ExchangeTimeUnit::Milliseconds,
-            )],
-            local_receive,
-            local_receive,
-        ),
+        EventTimestamps::new(exchange_times, local_receive, local_receive),
         bids,
         asks,
     )
@@ -521,6 +544,10 @@ impl Display for AdapterError {
             ),
             Self::InvalidPrice(error) => write!(formatter, "invalid Binance price: {error}"),
             Self::InvalidQuantity(error) => write!(formatter, "invalid Binance quantity: {error}"),
+            Self::TooManyLevels { actual, maximum } => write!(
+                formatter,
+                "received {actual} Binance depth levels on one side, maximum is {maximum}"
+            ),
             Self::InvalidSnapshot(error) => Display::fmt(error, formatter),
             Self::IdentityMismatch(error) => Display::fmt(error, formatter),
             Self::TradeDedupCapacityExceeded { capacity } => write!(
@@ -609,6 +636,128 @@ mod tests {
                 AdapterAction::Publish(NormalizedMarketEvent::TradeStreamResumed(_)),
                 AdapterAction::Publish(NormalizedMarketEvent::MarketTrade(_))
             ]
+        ));
+    }
+
+    fn trade_side(adapter: &mut BinanceAdapter, id: u64, buyer_is_maker: bool) -> MarketTrade {
+        let frame = format!(
+            r#"{{"stream":"btcusdt@aggTrade","data":{{"e":"aggTrade","E":10,"s":"BTCUSDT","a":{id},"p":"100","q":"1","f":700,"l":703,"T":9,"m":{buyer_is_maker}}}}}"#
+        );
+        let actions = adapter.on_text(
+            &frame,
+            LocalObservationTime::from_nanos_since_start(1),
+            &Clock(Cell::new(1)),
+        );
+        match actions.last() {
+            Some(AdapterAction::Publish(NormalizedMarketEvent::MarketTrade(trade))) => {
+                trade.clone()
+            }
+            _ => panic!("expected a Market Trade"),
+        }
+    }
+
+    #[test]
+    fn maps_buyer_maker_flag_to_aggressor_side_and_keeps_identity() {
+        let mut trades = adapters().trades;
+        let seller_initiated = trade_side(&mut trades, 91, true);
+        assert_eq!(
+            seller_initiated.aggressor_side(),
+            market_data::AggressorSide::Sell
+        );
+        assert_eq!(
+            seller_initiated.aggressor_side_classification(),
+            market_data::AggressorSideClassification::DerivedFromMakerSide
+        );
+        assert_eq!(
+            seller_initiated.identity(),
+            &MarketTradeIdentity::Binance {
+                aggregate_trade_id: 91,
+                first_trade_id: 700,
+                last_trade_id: 703,
+            }
+        );
+        let buyer_initiated = trade_side(&mut trades, 92, false);
+        assert_eq!(
+            buyer_initiated.aggressor_side(),
+            market_data::AggressorSide::Buy
+        );
+    }
+
+    #[test]
+    fn depth_preserves_transaction_time_and_rejects_more_than_ten_levels() {
+        let mut depth = adapters().depth;
+        let clock = Clock(Cell::new(1));
+        let frame = r#"{"stream":"btcusdt@depth10@100ms","data":{"e":"depthUpdate","E":10,"T":9,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[["100","1"]],"a":[["101","1"]]}}"#;
+        let actions = depth.on_text(
+            frame,
+            LocalObservationTime::from_nanos_since_start(1),
+            &clock,
+        );
+        let [AdapterAction::Publish(NormalizedMarketEvent::OrderBookSnapshot(snapshot))] =
+            actions.as_slice()
+        else {
+            panic!("expected one snapshot");
+        };
+        assert_eq!(
+            snapshot.timestamps().exchange_times(),
+            [
+                ExchangeTimeObservation::new(
+                    ExchangeTimeKind::EventTime,
+                    10,
+                    ExchangeTimeUnit::Milliseconds
+                ),
+                ExchangeTimeObservation::new(
+                    ExchangeTimeKind::TransactionTime,
+                    9,
+                    ExchangeTimeUnit::Milliseconds
+                ),
+            ]
+        );
+
+        let bids = (0..11)
+            .map(|level| format!(r#"["{}","1"]"#, 100 - level))
+            .collect::<Vec<_>>()
+            .join(",");
+        let oversized = frame.replace(r#"[["100","1"]]"#, &format!("[{bids}]"));
+        assert!(matches!(
+            depth
+                .on_text(
+                    &oversized,
+                    LocalObservationTime::from_nanos_since_start(2),
+                    &clock
+                )
+                .as_slice(),
+            [AdapterAction::Publish(
+                NormalizedMarketEvent::OrderBookUnavailable(_)
+            )]
+        ));
+    }
+
+    #[test]
+    fn reports_undecodable_and_unroutable_frames_as_invalid_messages() {
+        let mut adapters = adapters();
+        let clock = Clock(Cell::new(1));
+        let now = LocalObservationTime::from_nanos_since_start(1);
+        for frame in [
+            "{not json",
+            r#"{"stream":"x","data":{"e":"depthUpdate"}}"#,
+            r#"{"stream":"x","data":{"e":"depthUpdate","s":"ETHUSDT"}}"#,
+        ] {
+            assert!(matches!(
+                adapters.depth.on_text(frame, now, &clock).as_slice(),
+                [AdapterAction::InvalidMessage { .. }]
+            ));
+        }
+        assert!(matches!(
+            adapters
+                .trades
+                .on_text(
+                    r#"{"stream":"x","data":{"e":"trade","s":"BTCUSDT"}}"#,
+                    now,
+                    &clock
+                )
+                .as_slice(),
+            [AdapterAction::InvalidMessage { .. }]
         ));
     }
 }

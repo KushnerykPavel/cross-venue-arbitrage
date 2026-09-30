@@ -17,3 +17,6 @@ venue-aster = { path = "../../crates/venue-aster" }
 venue-binance = { path = "../../crates/venue-binance" }
 venue-hyperliquid = { path = "../../crates/venue-hyperliquid" }
 venue-lighter = { path = "../../crates/venue-lighter" }
+
+[dev-dependencies]
+tempfile = "3"

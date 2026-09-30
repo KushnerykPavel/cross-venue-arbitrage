@@ -48,6 +48,16 @@ class MarketEvent:
     book: OrderBook | None = None
     trade: MarketTrade | None = None
     availability_transition: str | None = None
+    availability_stream: str | None = None
+
+    @property
+    def invalidates_book(self) -> bool:
+        """An Order Book outage makes the venue's last book unusable."""
+        return (
+            self.kind == "availability"
+            and self.availability_stream == "order_book"
+            and self.availability_transition == "unavailable"
+        )
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,8 @@ const CAPTURE_DURATION_SECONDS: &str = "CAPTURE_DURATION_SECONDS";
 const DEFAULT_TRADE_DEDUP_CAPACITY: usize = 1_000_000;
 const DEFAULT_RECORDER_QUEUE_CAPACITY: usize = 4_096;
 const DEFAULT_CAPTURE_DURATION_SECONDS: u64 = 2 * 60 * 60;
+/// Hyperliquid is not an active venue (ADR 0010); it must be enabled explicitly.
+const DEFAULT_ENABLE_HYPERLIQUID: bool = false;
 
 pub struct TraderConfig {
     pub market_coins: Vec<MarketCoin>,
@@ -37,7 +39,7 @@ impl TraderConfig {
 
         let market_coins =
             env::var(MARKET_COINS).map_err(|_| ConfigError::MissingVariable(MARKET_COINS))?;
-        let enable_hyperliquid = optional_bool(ENABLE_HYPERLIQUID, true)?;
+        let enable_hyperliquid = optional_bool(ENABLE_HYPERLIQUID, DEFAULT_ENABLE_HYPERLIQUID)?;
         let trade_dedup_capacity = match env::var(TRADE_DEDUP_CAPACITY) {
             Ok(raw) => parse_positive_usize(TRADE_DEDUP_CAPACITY, &raw)?,
             Err(env::VarError::NotPresent) => NonZeroUsize::new(DEFAULT_TRADE_DEDUP_CAPACITY)
@@ -231,7 +233,14 @@ impl Error for ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, parse_market_coins, parse_positive_usize};
+    use super::{
+        ConfigError, DEFAULT_ENABLE_HYPERLIQUID, parse_market_coins, parse_positive_usize,
+    };
+
+    #[test]
+    fn hyperliquid_is_disabled_unless_explicitly_enabled() {
+        assert!(!DEFAULT_ENABLE_HYPERLIQUID);
+    }
 
     #[test]
     fn trims_entries_while_preserving_case_and_punctuation() {

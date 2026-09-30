@@ -555,3 +555,95 @@ fn recovery_discards_header_only_open_segment() {
     );
     assert!(!open_path.exists());
 }
+
+fn binance_aggregate_trade() -> NormalizedMarketEvent {
+    NormalizedMarketEvent::MarketTrade(MarketTrade::new(
+        Venue::Binance,
+        Symbol::perpetual(MarketCoin::try_new("BTC").unwrap()),
+        EventTimestamps::new(
+            vec![
+                ExchangeTimeObservation::new(
+                    ExchangeTimeKind::EventTime,
+                    10,
+                    ExchangeTimeUnit::Milliseconds,
+                ),
+                ExchangeTimeObservation::new(
+                    ExchangeTimeKind::TradeTime,
+                    9,
+                    ExchangeTimeUnit::Milliseconds,
+                ),
+            ],
+            LocalObservationTime::from_nanos_since_start(10),
+            LocalObservationTime::from_nanos_since_start(12),
+        ),
+        Price::from_str("100.5").unwrap(),
+        Quantity::from_str("0.004").unwrap(),
+        MarketTradeReportingKind::TakerOrderAggregate,
+        MarketTradeKind::Regular,
+        AggressorSide::Sell,
+        AggressorSideClassification::DerivedFromMakerSide,
+        MarketTradeIdentity::Binance {
+            aggregate_trade_id: 91,
+            first_trade_id: 700,
+            last_trade_id: 703,
+        },
+    ))
+}
+
+#[test]
+fn binance_trade_v1_has_stable_golden_postcard_bytes_and_round_trips() {
+    let original = binance_aggregate_trade();
+    let stored = StoredEventV1::from_normalized(1, &original).unwrap();
+    let bytes = postcard::to_allocvec(&stored).unwrap();
+    // capture_sequence, venue=Binance(3), "BTC", local times, two exchange
+    // times, Some(BinanceTrade=4){91, 700, 703}, MarketTrade(2) payload.
+    assert_eq!(
+        bytes,
+        [
+            1, 3, 3, b'B', b'T', b'C', 10, 12, 2, 0, 10, 0, 1, 9, 0, 1, 4, 91, 188, 5, 191, 5, 2,
+            218, 15, 1, 8, 3, 1, 0, 1, 1
+        ]
+    );
+    assert_eq!(stored.to_normalized().unwrap(), original);
+}
+
+#[test]
+fn binance_snapshot_round_trips_with_source_sequence_and_transaction_time() {
+    let level = |price: &str| {
+        BookLevel::new(
+            Price::from_str(price).unwrap(),
+            Quantity::from_str("1").unwrap(),
+            None,
+        )
+    };
+    let original = NormalizedMarketEvent::OrderBookSnapshot(
+        OrderBookSnapshot::try_new(
+            Venue::Binance,
+            Symbol::perpetual(MarketCoin::try_new("BTC").unwrap()),
+            Some(77),
+            EventTimestamps::new(
+                vec![
+                    ExchangeTimeObservation::new(
+                        ExchangeTimeKind::EventTime,
+                        10,
+                        ExchangeTimeUnit::Milliseconds,
+                    ),
+                    ExchangeTimeObservation::new(
+                        ExchangeTimeKind::TransactionTime,
+                        9,
+                        ExchangeTimeUnit::Milliseconds,
+                    ),
+                ],
+                LocalObservationTime::from_nanos_since_start(10),
+                LocalObservationTime::from_nanos_since_start(11),
+            ),
+            vec![level("100.1")],
+            vec![level("100.2")],
+        )
+        .unwrap(),
+    );
+    let stored = StoredEventV1::from_normalized(1, &original).unwrap();
+
+    assert_eq!(stored.venue(), StoredVenueV1::Binance);
+    assert_eq!(stored.to_normalized().unwrap(), original);
+}

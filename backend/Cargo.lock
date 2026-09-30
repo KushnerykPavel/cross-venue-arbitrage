@@ -1262,8 +1262,11 @@ dependencies = [
 name = "replay"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "engine",
+ "market-data",
  "recorder",
+ "tempfile",
 ]
 
 [[package]]
@@ -1793,6 +1796,7 @@ dependencies = [
  "engine",
  "market-data",
  "recorder",
+ "tempfile",
  "tokio",
  "venue",
  "venue-aster",

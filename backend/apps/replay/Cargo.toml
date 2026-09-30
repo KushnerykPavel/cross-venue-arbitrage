@@ -8,3 +8,8 @@ publish.workspace = true
 [dependencies]
 engine = { path = "../../crates/engine" }
 recorder = { path = "../../crates/recorder" }
+
+[dev-dependencies]
+domain = { path = "../../crates/domain" }
+market-data = { path = "../../crates/market-data" }
+tempfile = "3"

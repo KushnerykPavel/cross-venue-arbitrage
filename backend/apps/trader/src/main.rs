@@ -211,20 +211,24 @@ fn handle_live_event(
     event: LiveSessionEvent<'_>,
 ) -> io::Result<()> {
     match event {
-        LiveSessionEvent::MarketData { event } => {
+        LiveSessionEvent::MarketData { events } => {
+            // Both locks are held for the whole batch so that one frame receives
+            // consecutive Capture Sequence values and enters the engine in order.
             let mut capture = capture
                 .lock()
                 .map_err(|_| io::Error::other("capture coordinator lock was poisoned"))?;
-            let accepted = capture
+            let capture = capture
                 .as_mut()
-                .ok_or_else(|| io::Error::other("capture coordinator is shutting down"))?
-                .accept(event)
-                .map_err(io::Error::other)?;
-            engine
+                .ok_or_else(|| io::Error::other("capture coordinator is shutting down"))?;
+            let mut engine = engine
                 .lock()
-                .map_err(|_| io::Error::other("market-data engine lock was poisoned"))?
-                .process(accepted.capture_sequence, &accepted.event)
-                .map_err(io::Error::other)?;
+                .map_err(|_| io::Error::other("market-data engine lock was poisoned"))?;
+            for event in events {
+                let accepted = capture.accept(event).map_err(io::Error::other)?;
+                engine
+                    .process(accepted.capture_sequence, &accepted.event)
+                    .map_err(io::Error::other)?;
+            }
         }
         LiveSessionEvent::TradeDeduplicated { .. } => {
             capture
@@ -233,6 +237,16 @@ fn handle_live_event(
                 .as_mut()
                 .ok_or_else(|| io::Error::other("capture coordinator is shutting down"))?
                 .observe_deduplicated_trade()
+                .map_err(io::Error::other)?;
+        }
+        LiveSessionEvent::InvalidMessage { venue, reason } => {
+            eprintln!("{venue} invalid message: {reason}");
+            capture
+                .lock()
+                .map_err(|_| io::Error::other("capture coordinator lock was poisoned"))?
+                .as_mut()
+                .ok_or_else(|| io::Error::other("capture coordinator is shutting down"))?
+                .observe_invalid_message()
                 .map_err(io::Error::other)?;
         }
         lifecycle => present_lifecycle(lifecycle),
@@ -384,8 +398,117 @@ fn present_lifecycle(event: LiveSessionEvent<'_>) {
         LiveSessionEvent::MarketData { .. } => {
             unreachable!("market data is handled before lifecycle presentation")
         }
-        LiveSessionEvent::TradeDeduplicated { .. } => {
-            unreachable!("deduplication is handled before lifecycle presentation")
+        LiveSessionEvent::TradeDeduplicated { .. } | LiveSessionEvent::InvalidMessage { .. } => {
+            unreachable!("quality observations are handled before lifecycle presentation")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::num::NonZeroUsize;
+    use std::thread;
+
+    use domain::Venue;
+    use market_data::{LocalObservationTime, NormalizedMarketEvent, TradeStreamResumed};
+    use recorder::{StoredVenueV1, read_segment};
+
+    use super::*;
+
+    const FRAME_EVENTS: usize = 5;
+
+    fn resumed(venue: Venue, nanos: u64) -> NormalizedMarketEvent {
+        NormalizedMarketEvent::TradeStreamResumed(TradeStreamResumed::new(
+            venue,
+            MarketCoin::try_new("BTC").unwrap(),
+            LocalObservationTime::from_nanos_since_start(nanos),
+        ))
+    }
+
+    fn metadata() -> CaptureMetadata {
+        CaptureMetadata {
+            sanitized_configuration: BTreeMap::new(),
+            git_commit: "test".into(),
+            dirty_build: false,
+            package_version: "test".into(),
+            rust_target: "test".into(),
+            collector_label: "test".into(),
+            configured_markets: vec!["BTC".into()],
+            resolved_venue_markets: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn concurrent_sessions_cannot_interleave_events_from_one_frame() {
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let coordinator = CaptureCoordinator::start(
+            CaptureSettings {
+                data_dir: data_dir.path().to_path_buf(),
+                queue_capacity: NonZeroUsize::new(100_000).unwrap(),
+                segment_limits: SegmentLimits::default(),
+                metadata: metadata(),
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
+        let capture_id = coordinator.capture_id();
+        let directory = coordinator.capture_directory().to_path_buf();
+        let capture: SharedCapture = Arc::new(Mutex::new(Some(coordinator)));
+        let engine: SharedEngine = Arc::new(Mutex::new(MarketDataEngine::new()));
+
+        let frames = {
+            let (capture, engine) = (Arc::clone(&capture), Arc::clone(&engine));
+            thread::spawn(move || {
+                for frame in 0..200_u64 {
+                    let events = (0..FRAME_EVENTS as u64)
+                        .map(|element| resumed(Venue::Lighter, frame * 10 + element))
+                        .collect();
+                    handle_live_event(&capture, &engine, LiveSessionEvent::MarketData { events })
+                        .unwrap();
+                }
+            })
+        };
+        let singles = {
+            let (capture, engine) = (Arc::clone(&capture), Arc::clone(&engine));
+            thread::spawn(move || {
+                for nanos in 0..1_000 {
+                    let events = vec![resumed(Venue::Aster, nanos)];
+                    handle_live_event(&capture, &engine, LiveSessionEvent::MarketData { events })
+                        .unwrap();
+                }
+            })
+        };
+        frames.join().unwrap();
+        singles.join().unwrap();
+
+        let manifest = capture
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .finish(CaptureStatus::Complete, SystemTime::now())
+            .unwrap();
+        let segment = read_segment(
+            &directory.join(&manifest.segments[0].filename),
+            capture_id,
+            0,
+        )
+        .unwrap();
+        assert_eq!(segment.events.len(), 200 * FRAME_EVENTS + 1_000);
+        let mut run = 0;
+        for event in &segment.events {
+            if event.venue() == StoredVenueV1::Lighter {
+                run += 1;
+            } else {
+                assert_eq!(run % FRAME_EVENTS, 0, "a frame was interleaved");
+                run = 0;
+            }
+        }
+        assert_eq!(run % FRAME_EVENTS, 0, "a frame was interleaved");
+        assert_eq!(
+            engine.lock().unwrap().report().events_processed,
+            u64::try_from(segment.events.len()).unwrap()
+        );
     }
 }
