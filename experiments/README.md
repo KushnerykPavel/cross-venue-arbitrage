@@ -67,12 +67,22 @@ net edge. Orders may also receive a configured `default_order_ttl_ns`.
 source experiments/.venv/bin/activate
 python -m experiments.simulator.run \
   --dataset experiments/data/parquet/btc-capture-001 \
+  --split train \
   --max-depth 10 \
-  --output experiments/data/results/cross-venue-arbitrage
+  --output experiments/data/results/cross-venue-arbitrage-train
 ```
 
 The output directory contains `orders.parquet`, `fills.parquet`,
 `equity.parquet`, `inventory.json`, and `summary.json`.
+
+For one capture, run again with `--split validation` and `--split test`, using
+separate output directories. The split points are 60% and 80% of elapsed local
+receive time. Each interval is a contiguous Capture Sequence range; the test
+interval is held out until the strategy parameters have been chosen using train
+and validation. The existing `CrossVenueArbitrageStrategy` is the baseline.
+Its fees, latency, and slippage are simulator assumptions, and its `net_pnl`
+is a simulated outcome rather than an observed executable return. Each split
+starts with empty book and portfolio state, so its first snapshots warm it up.
 
 Research notebooks:
 
@@ -80,6 +90,9 @@ Research notebooks:
 2. `02_derived_order_books.ipynb`
 3. `03_cross_venue_arbitrage.ipynb`
 4. `04_execution_and_pnl_analysis.ipynb`
+5. `05_cont_kukanov_stoikov_ofi.ipynb` — Level I order flow imbalance on
+   Binance, with train/validation price-impact and next-second signal checks;
+   the held-out test set is not loaded.
 
 This is a research simulator, not a live execution path. Its float conversion
 occurs only at the Python analysis boundary; canonical Rust data remains exact.

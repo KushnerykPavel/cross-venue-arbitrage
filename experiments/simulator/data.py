@@ -10,7 +10,12 @@ def _files(root: Path, event_type: str) -> list[str]:
     return [str(path) for path in root.glob(f"**/event_type={event_type}/**/*.parquet")]
 
 
-def load_events(dataset: str | Path, max_depth: int = 10) -> list[MarketEvent]:
+def load_events(
+    dataset: str | Path,
+    max_depth: int = 10,
+    sequence_start: int | None = None,
+    sequence_end: int | None = None,
+) -> list[MarketEvent]:
     """Load a bounded top-N L2 event stream.
 
     Parquet DECIMAL values are converted to float only at this research adapter
@@ -24,12 +29,18 @@ def load_events(dataset: str | Path, max_depth: int = 10) -> list[MarketEvent]:
     if not level_files or not book_files:
         raise FileNotFoundError(f"missing order-book tables under {root}")
 
-    books = (
-        pl.scan_parquet(book_files, hive_partitioning=True)
-        .select(["venue", "capture_sequence", "local_receive_time"])
+    def within_split(frame: pl.LazyFrame) -> pl.LazyFrame:
+        if sequence_start is not None:
+            frame = frame.filter(pl.col("capture_sequence") >= sequence_start)
+        if sequence_end is not None:
+            frame = frame.filter(pl.col("capture_sequence") < sequence_end)
+        return frame
+
+    books = within_split(pl.scan_parquet(book_files, hive_partitioning=True)).select(
+        ["venue", "capture_sequence", "local_receive_time"]
     )
     levels = (
-        pl.scan_parquet(level_files, hive_partitioning=True)
+        within_split(pl.scan_parquet(level_files, hive_partitioning=True))
         .filter(pl.col("position") < max_depth)
         .select(["venue", "capture_sequence", "side", "position", "price", "quantity"])
         .join(books, on=["venue", "capture_sequence"])
@@ -55,7 +66,7 @@ def load_events(dataset: str | Path, max_depth: int = 10) -> list[MarketEvent]:
         events.append(MarketEvent(item["sequence"], item["local_time"], "book", item["venue"], book=book))
 
     if trade_files:
-        trades = pl.scan_parquet(trade_files, hive_partitioning=True).select([
+        trades = within_split(pl.scan_parquet(trade_files, hive_partitioning=True)).select([
             "venue", "capture_sequence", "local_receive_time", "price", "quantity", "aggressor_side"
         ]).collect()
         for venue, sequence, local_time, price, quantity, side in trades.iter_rows():
@@ -63,7 +74,7 @@ def load_events(dataset: str | Path, max_depth: int = 10) -> list[MarketEvent]:
             events.append(MarketEvent(sequence, local_time, "trade", venue, trade=trade))
 
     if availability_files:
-        availability = pl.scan_parquet(availability_files, hive_partitioning=True).select([
+        availability = within_split(pl.scan_parquet(availability_files, hive_partitioning=True)).select([
             "venue", "capture_sequence", "transition", "observed_at"
         ]).collect()
         for venue, sequence, transition, observed_at in availability.iter_rows():

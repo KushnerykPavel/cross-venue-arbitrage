@@ -8,3 +8,5 @@
 /experiments/data/
 /experiments/.venv/
 /experiments/**/.ipynb_checkpoints/
+**/__pycache__/
+*.pyc
