@@ -2,7 +2,7 @@
 
 Type: AFK
 Label: ready-for-agent
-Status: open
+Status: done
 
 ## Parent
 
@@ -14,11 +14,11 @@ Generated-input tests verify exactness of `ExactDecimal` parsing/arithmetic and 
 
 ## Acceptance criteria
 
-- [ ] Round-trip parse/format property for ExactDecimal
-- [ ] Arithmetic properties hold without loss (e.g. commutativity, scale handling)
-- [ ] After any sequence of valid updates, levels are sorted and quantities positive
-- [ ] A delete removes its level; an invalid update makes the Order Book unavailable rather than corrupting it
-- [ ] Tests run in CI
+- [x] Round-trip parse/format property for ExactDecimal
+- [x] Arithmetic properties hold without loss (e.g. commutativity, scale handling)
+- [x] After any sequence of valid updates, levels are sorted and quantities positive
+- [x] A delete removes its level; an invalid update makes the Order Book unavailable rather than corrupting it
+- [x] Tests run in CI
 
 ## Blocked by
 

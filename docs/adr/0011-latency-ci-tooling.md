@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed; awaiting project-owner approval.
+Accepted on 2026-10-03.
 
 ## Context
 

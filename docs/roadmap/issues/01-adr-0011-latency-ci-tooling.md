@@ -2,7 +2,7 @@
 
 Type: HITL
 Label: ready-for-human
-Status: open
+Status: done
 
 ## Parent
 
@@ -14,12 +14,12 @@ Write ADR 0011 recording how latency is measured and which dev-only tooling the 
 
 ## Acceptance criteria
 
-- [ ] ADR 0011 exists under docs/adr in the existing ADR format
-- [ ] Each dependency states requirement, why std/current deps are insufficient, hot-path impact (none), and correctness/performance implications
-- [ ] Benchmark methodology is defined: fixtures, warm-up, reported metrics (p50/p95/p99/p99.9/max, allocations per message)
-- [ ] ADR 0007 console/presentation caveat for live receive latency is recorded
-- [ ] ARCHITECTURE.md references ADR 0011
-- [ ] Project owner has approved the ADR
+- [x] ADR 0011 exists under docs/adr in the existing ADR format
+- [x] Each dependency states requirement, why std/current deps are insufficient, hot-path impact (none), and correctness/performance implications
+- [x] Benchmark methodology is defined: fixtures, warm-up, reported metrics (p50/p95/p99/p99.9/max, allocations per message)
+- [x] ADR 0007 console/presentation caveat for live receive latency is recorded
+- [x] ARCHITECTURE.md references ADR 0011
+- [x] Project owner has approved the ADR
 
 ## Blocked by
 

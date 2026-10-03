@@ -4,12 +4,12 @@ Source: [PRD](../hft-portfolio-prd.md). Work blockers first.
 
 | # | Title | Type | Blocked by | Status |
 |---|---|---|---|---|
-| 01 | [ADR 0011: latency measurement, benchmark, CI and test tooling dependencies](./01-adr-0011-latency-ci-tooling.md) | HITL | — | open |
+| 01 | [ADR 0011: latency measurement, benchmark, CI and test tooling dependencies](./01-adr-0011-latency-ci-tooling.md) | HITL | — | done |
 | 02 | [CI workflow: fmt, clippy, tests, pytest, cargo deny](./02-ci-workflow.md) | AFK | 01 | open |
 | 03 | [Latency report: receive→processing percentiles per venue](./03-latency-report.md) | AFK | 01 | open |
-| 04 | [Benchmark baseline: Binance decode → Order Book update](./04-bench-binance.md) | AFK | 01 | open |
-| 05 | [Benchmarks for Aster and Lighter](./05-bench-aster-lighter.md) | AFK | 04 | open |
-| 06 | [Property tests: ExactDecimal and Lighter Order Book invariants](./06-property-tests.md) | AFK | 01 | open |
+| 04 | [Benchmark baseline: Binance decode → Order Book update](./04-bench-binance.md) | AFK | 01 | done |
+| 05 | [Benchmarks for Aster and Lighter](./05-bench-aster-lighter.md) | AFK | 04 | done |
+| 06 | [Property tests: ExactDecimal and Lighter Order Book invariants](./06-property-tests.md) | AFK | 01 | done |
 | 07 | [Fuzz crate: adapter text entry points](./07-fuzz-adapters.md) | AFK | 01 | open |
 | 08 | [ADR 0012: strategy event semantics](./08-adr-0012-strategy-events.md) | HITL | — | open |
 | 09 | [ADR 0013: execution simulation](./09-adr-0013-execution-sim.md) | HITL | 08 | open |

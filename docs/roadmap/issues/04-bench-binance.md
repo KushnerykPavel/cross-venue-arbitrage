@@ -2,7 +2,7 @@
 
 Type: AFK
 Label: ready-for-agent
-Status: open
+Status: done
 
 ## Parent
 
@@ -14,11 +14,11 @@ A criterion benchmark replays fixed Binance depth and aggTrade fixtures through 
 
 ## Acceptance criteria
 
-- [ ] Benchmark runs from a documented command outside CI
-- [ ] Fixtures are small, deterministic and committed
-- [ ] Output includes p50/p95/p99/p99.9/max via hdrhistogram and allocations per message
-- [ ] Baseline report committed with host, toolchain and commit
-- [ ] No production code behaviour changes
+- [x] Benchmark runs from a documented command outside CI
+- [x] Fixtures are small, deterministic and committed
+- [x] Output includes p50/p95/p99/p99.9/max via hdrhistogram and allocations per message
+- [x] Baseline report committed with host, toolchain and commit
+- [x] No production code behaviour changes
 
 ## Blocked by
 

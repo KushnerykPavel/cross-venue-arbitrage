@@ -2,7 +2,7 @@
 
 Type: AFK
 Label: ready-for-agent
-Status: open
+Status: done
 
 ## Parent
 
@@ -14,9 +14,9 @@ Extend the benchmark harness from ticket 04 to the Aster partial-depth and Light
 
 ## Acceptance criteria
 
-- [ ] Aster and Lighter benchmarks use the same methodology as Binance
-- [ ] Lighter fixture exercises incremental updates including level deletes
-- [ ] Baseline report updated with all three venues
+- [x] Aster and Lighter benchmarks use the same methodology as Binance
+- [x] Lighter fixture exercises incremental updates including level deletes
+- [x] Baseline report updated with all three venues
 
 ## Blocked by
 
