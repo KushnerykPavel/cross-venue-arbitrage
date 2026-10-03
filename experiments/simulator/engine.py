@@ -22,14 +22,20 @@ class ExchangeSimulator:
         self.books: dict[str, OrderBook] = {}
         self.orders: list[OrderRecord] = []
         self.pending: list[OrderRecord] = []
+        self.cancels: list[OrderRecord] = []
         self.next_order_id = 1
 
     def submit(self, intent: OrderIntent, decision_time_ns: int) -> OrderRecord:
+        activation_time_ns = decision_time_ns + self.config.order_latency_ns.get(intent.venue, 0)
+        if intent.order_type == "market":
+            activation_time_ns += self.config.taker_speed_bump_ns.get(intent.venue, 0)
+        elif intent.order_type == "cancel":
+            activation_time_ns += self.config.cancel_speed_bump_ns.get(intent.venue, 0)
         order = OrderRecord(
             order_id=self.next_order_id,
             intent=intent,
             decision_time_ns=decision_time_ns,
-            activation_time_ns=decision_time_ns + self.config.order_latency_ns.get(intent.venue, 0),
+            activation_time_ns=activation_time_ns,
             remaining_quantity=intent.quantity,
         )
         self.next_order_id += 1
@@ -38,8 +44,9 @@ class ExchangeSimulator:
             order.status = "rejected"
             order.rejection_reason = f"{intent.venue} is a signal-only venue"
         elif intent.order_type == "cancel":
-            self.cancel(intent.order_id, decision_time_ns)
+            # Takes effect at activation; the target can still fill before then.
             order.status = "cancel_requested"
+            self.cancels.append(order)
         else:
             self.pending.append(order)
         return order
@@ -53,13 +60,31 @@ class ExchangeSimulator:
                 return ExecutionEvent(order_id, order.intent.venue, "cancelled", time_ns)
         return None
 
+    def _apply_due_cancels(self, time_ns: int) -> list[ExecutionEvent]:
+        reports: list[ExecutionEvent] = []
+        still_waiting: list[OrderRecord] = []
+        for request in self.cancels:
+            if request.activation_time_ns > time_ns:
+                still_waiting.append(request)
+                continue
+            report = self.cancel(request.intent.order_id, request.activation_time_ns)
+            if report is None:
+                request.status = "rejected"
+                request.rejection_reason = "target order is no longer open"
+            else:
+                request.status = "cancel_applied"
+                reports.append(report)
+        self.cancels = still_waiting
+        return reports
+
     def on_market_event(self, event: MarketEvent) -> tuple[list[Fill], list[ExecutionEvent]]:
         if event.book is not None:
             self.books[event.venue] = event.book
         elif event.invalidates_book:
             self.books.pop(event.venue, None)
         fills: list[Fill] = []
-        reports: list[ExecutionEvent] = []
+        # A cancel due at or before this event reaches the venue first.
+        reports: list[ExecutionEvent] = self._apply_due_cancels(event.local_time_ns)
         for order in self.pending:
             if order.status not in {"pending", "partially_filled", "active"}:
                 continue

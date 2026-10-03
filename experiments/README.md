@@ -53,6 +53,16 @@ It models independent market-data and order latency, market and limit orders,
 partial fills, cancellation/expiration states, fees, inventory, and separated
 realized/unrealized/net PnL accounting.
 
+Default taker fees match the account tiers in use: Aster base tier at 4 bps
+and Lighter Standard at 0 bps. `taker_speed_bump_ns` adds Lighter Standard's
+300 ms venue delay to market orders.
+
+A cancel takes effect after the venue's order latency plus
+`cancel_speed_bump_ns` (Lighter Standard: 300 ms). Until then, the target
+order can still fill; a cancel that arrives too late is recorded as rejected.
+Every fill is still charged the taker fee; a maker fill model is not
+implemented yet.
+
 The arbitrage strategy triggers on executable `net_edge_bps`, calculated from
 the requested quantity across L2 levels after both venue fees and configured
 slippage. `minimum_net_edge_bps` is the primary threshold; the old
@@ -93,6 +103,9 @@ Research notebooks:
 5. `05_cont_kukanov_stoikov_ofi.ipynb` — Level I order flow imbalance on
    Binance, with train/validation price-impact and next-second signal checks;
    the held-out test set is not loaded.
+6. `07_lead_lag.ipynb` — Binance → Aster/Lighter lead/lag: response to Binance
+   moves and taker round-trip edge on the lag venue (`experiments/analysis/`);
+   train and validation only.
 
 This is a research simulator, not a live execution path. Its float conversion
 occurs only at the Python analysis boundary; canonical Rust data remains exact.

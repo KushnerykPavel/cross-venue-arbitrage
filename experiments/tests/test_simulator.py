@@ -193,3 +193,125 @@ def test_trade_stream_outage_does_not_invalidate_the_book():
     ]
     result = Simulator(config).run(events, CrossVenueArbitrageStrategy(config))
     assert {order.intent.venue for order in result.orders} == {"aster", "lighter"}
+
+
+def test_default_fees_match_account_tiers_in_use():
+    config = SimulationConfig()
+
+    assert config.taker_fee_bps["aster"] == 4.0
+    assert config.taker_fee_bps["lighter"] == 0.0
+    assert config.taker_speed_bump_ns == {"lighter": 300_000_000}
+
+
+class OneOrder:
+    def __init__(self, intent):
+        self.intent = intent
+        self.sent = False
+
+    def on_event(self, event, state, portfolio):
+        if self.sent or self.intent.venue not in state:
+            return []
+        self.sent = True
+        return [self.intent]
+
+
+def speed_bump_config():
+    return SimulationConfig(
+        order_latency_ns={"lighter": 10, "aster": 10},
+        taker_speed_bump_ns={"lighter": 300},
+        stale_book_ns=10_000,
+    )
+
+
+def test_lighter_market_order_waits_for_the_taker_speed_bump():
+    events = [book("lighter", 1, 99.0, 100.0, 0), book("lighter", 2, 104.0, 105.0, 200),
+              book("lighter", 3, 109.0, 110.0, 310)]
+    result = Simulator(speed_bump_config()).run(events, OneOrder(OrderIntent("lighter", "buy", 1.0)))
+
+    assert result.orders[0].activation_time_ns == 310
+    assert [fill.price for fill in result.fills] == [110.0]
+
+
+def test_speed_bump_applies_only_to_its_venue_and_to_taker_orders():
+    config = speed_bump_config()
+    aster = Simulator(config).run(
+        [book("aster", 1, 99.0, 100.0, 0), book("aster", 2, 99.0, 100.0, 20)],
+        OneOrder(OrderIntent("aster", "buy", 1.0)),
+    )
+    lighter_limit = Simulator(config).run(
+        [book("lighter", 1, 99.0, 100.0, 0), book("lighter", 2, 99.0, 100.0, 20)],
+        OneOrder(OrderIntent("lighter", "buy", 1.0, order_type="limit", limit_price=100.0)),
+    )
+
+    assert aster.orders[0].activation_time_ns == 10
+    assert lighter_limit.orders[0].activation_time_ns == 10
+
+
+class RestThenCancel:
+    """Rest a buy limit below the market, then cancel it on the next event."""
+
+    def __init__(self, venue, limit_price):
+        self.venue = venue
+        self.limit_price = limit_price
+        self.step = 0
+        self.reports = []
+
+    def on_event(self, event, state, portfolio):
+        self.step += 1
+        if self.step == 1:
+            return [OrderIntent(self.venue, "buy", 1.0, order_type="limit", limit_price=self.limit_price)]
+        if self.step == 2:
+            return [OrderIntent(self.venue, "cancel", order_type="cancel", order_id=1)]
+        return []
+
+    def on_execution(self, report, portfolio):
+        self.reports.append(report.status)
+
+
+def cancel_config():
+    return SimulationConfig(
+        order_latency_ns={"lighter": 10, "aster": 10},
+        taker_speed_bump_ns={},
+        cancel_speed_bump_ns={"lighter": 300},
+        stale_book_ns=10_000,
+    )
+
+
+def test_default_cancel_speed_bump_is_lighter_only():
+    assert SimulationConfig().cancel_speed_bump_ns == {"lighter": 300_000_000}
+
+
+def test_lighter_order_can_fill_while_its_cancel_is_delayed():
+    # Limit 95 rests; cancel decided at t=20 takes effect at 20+10+300=330.
+    # At t=200 the ask drops to 95, so the order fills before the cancel lands.
+    events = [
+        book("lighter", 1, 99.0, 100.0, 0),
+        book("lighter", 2, 99.0, 100.0, 20),
+        book("lighter", 3, 94.0, 95.0, 200),
+        book("lighter", 4, 94.0, 95.0, 400),
+    ]
+    strategy = RestThenCancel("lighter", 95.0)
+    result = Simulator(cancel_config()).run(events, strategy)
+
+    cancel = result.orders[1]
+    assert cancel.activation_time_ns == 330
+    assert cancel.status == "rejected"
+    assert [fill.price for fill in result.fills] == [95.0]
+    assert "cancelled" not in strategy.reports
+
+
+def test_cancel_takes_effect_after_order_latency_only_without_a_speed_bump():
+    events = [
+        book("aster", 1, 99.0, 100.0, 0),
+        book("aster", 2, 99.0, 100.0, 20),
+        book("aster", 3, 99.0, 100.0, 30),
+        book("aster", 4, 94.0, 95.0, 200),
+    ]
+    strategy = RestThenCancel("aster", 95.0)
+    result = Simulator(cancel_config()).run(events, strategy)
+
+    assert result.orders[1].activation_time_ns == 30
+    assert result.orders[1].status == "cancel_applied"
+    assert result.orders[0].status == "cancelled"
+    assert result.fills == []
+    assert strategy.reports == ["cancelled"]

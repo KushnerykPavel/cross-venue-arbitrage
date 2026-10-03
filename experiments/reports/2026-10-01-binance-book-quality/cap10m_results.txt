@@ -1,0 +1,55 @@
+duration 599s bookTicker 666812 depth10 5851 aggTrade 29826 rest 599
+
+[1] depth10 top != bookTicker at same-or-earlier u: 0/5851
+    REST top != bookTicker as-of T: 7/599
+
+[2] trades classified vs strictly-previous and strictly-next bookTicker (n=29823):
+    ('sweep_prev', 'out_next'): 38.9%
+    ('sweep_prev', 'in_next'): 28.0%
+    ('in_prev', 'in_next'): 26.2%
+    ('in_prev', 'out_next'): 6.5%
+    ('other_prev', 'in_next'): 0.3%
+    ('other_prev', 'out_next'): 0.1%
+
+[3] per second: bookTicker mid changes 14.15, depth10 mid changes 1.63, trade price changes 46.90
+    of trade price changes: within one match (same T, sweep levels) 70%, bid<->ask bounce 20%, other 10%
+    distinct trade timestamps T per second 16.72
+
+[4] depth10 lag behind bookTicker per mid change (n=8479): exchange-T ms p50 52 p90 91 max 102; local-recv ms p50 36.9 p90 81.3
+
+[5] recv - exchange T, ms p50/p99 (includes clock offset, compare only relatively):
+    bookTicker 70.4 / 247.3
+    depth10    54.4 / 126.3
+    aggTrade   65.2 / 322.8
+
+[6] aggTrade recv - bookTicker recv for same T, ms (n=28818): p10 -42.2 p50 -4.5 p90 91.3
+
+[7] X=2 bps / 200 ms: events bookTicker 35, depth10 26, aggTrade-price 36
+    depth10 detection - bookTicker detection (local ms): n=24 p50 42.2 min -226.7 max 128.0
+    trade detection - bookTicker detection (local ms):   n=35 p50 -25.0 min -139.8 max 108.1
+
+[7] X=3 bps / 200 ms: events bookTicker 11, depth10 9, aggTrade-price 11
+    depth10 detection - bookTicker detection (local ms): n=9 p50 39.4 min -61.4 max 125.2
+    trade detection - bookTicker detection (local ms):   n=11 p50 -29.9 min -67.9 max 293.2
+
+[7] X=5 bps / 200 ms: events bookTicker 1, depth10 1, aggTrade-price 2
+    depth10 detection - bookTicker detection (local ms): n=1 p50 72.2 min 72.2 max 72.2
+    trade detection - bookTicker detection (local ms):   n=1 p50 207.1 min 207.1 max 207.1
+
+[8] E - T (ms, exchange clock) p50/p90/p99/max:
+    bookticker   0 / 1 / 1 / 3
+    depth_public 1 / 2 / 3 / 5
+    aggtrade     1 / 83 / 150 / 158
+
+[9] depth10 local lag behind bookTicker mid change, by jump size (ms):
+    1 tick     n=2463 p50   37.5 p90   81.1 max  359.1
+    2-4 ticks  n=2190 p50   35.6 p90   77.6 max  361.7
+    >=5 ticks  n=3084 p50   37.5 p90   83.1 max  361.7
+
+[7b] X=0.5 bps: events bookTicker 189, depth10 181, trade 183 (indicative)
+    depth10 - bookTicker detection, local ms: n=165 p50 35.9 p10 0.1 p90 87.0
+    trade - bookTicker detection, local ms: n=161 p50 -5.5 p10 -16.6 p90 33.4
+
+[7b] X=1.0 bps: events bookTicker 122, depth10 115, trade 123 (indicative)
+    depth10 - bookTicker detection, local ms: n=106 p50 40.9 p10 -5.7 p90 80.5
+    trade - bookTicker detection, local ms: n=117 p50 -8.6 p10 -29.7 p90 8.7

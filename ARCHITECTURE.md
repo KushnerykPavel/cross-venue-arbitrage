@@ -105,6 +105,11 @@ the replay source of truth. The exact contract, ownership, failure behavior,
 filesystem format, and acceptance criteria are specified in
 [the reproducible market-data pipeline design](docs/design/reproducible-market-data-pipeline.md).
 
+Latency reporting, benchmark methodology, CI checks, and development-tool
+justifications are specified in
+[ADR 0011](docs/adr/0011-latency-ci-tooling.md). In-process latency histograms
+remain deferred to the metrics ADR.
+
 ## Open architecture decisions
 
 Implementation must stop for explicit direction if it requires any of
