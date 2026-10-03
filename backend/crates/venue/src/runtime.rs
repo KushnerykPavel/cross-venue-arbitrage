@@ -30,6 +30,9 @@ impl MarketKey {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+// Boxing Publish would add an allocation for every normalized event in the
+// latency-sensitive adapter path.
+#[allow(clippy::large_enum_variant)]
 pub enum AdapterAction {
     SendText(String),
     SendPing(Vec<u8>),

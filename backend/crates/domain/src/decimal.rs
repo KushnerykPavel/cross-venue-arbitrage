@@ -76,6 +76,22 @@ impl ExactDecimal {
         self.scale
     }
 
+    /// Adds two positive decimals exactly, returning `None` if the result
+    /// cannot be represented in the supported 18-decimal comparison range.
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        let mut coefficient = self
+            .comparison_units()
+            .checked_add(other.comparison_units())?;
+        let mut scale = MAX_SCALE;
+
+        while scale > 0 && coefficient % 10 == 0 {
+            coefficient /= 10;
+            scale -= 1;
+        }
+
+        Some(Self { coefficient, scale })
+    }
+
     fn comparison_units(self) -> i128 {
         self.coefficient
             .checked_mul(power_of_ten(MAX_SCALE - self.scale))
@@ -132,6 +148,7 @@ const fn power_of_ten(exponent: u8) -> i128 {
 #[cfg(test)]
 mod tests {
     use super::{DecimalParseError, ExactDecimal};
+    use proptest::prelude::*;
 
     #[test]
     fn normalizes_leading_and_trailing_zeroes() {
@@ -148,6 +165,21 @@ mod tests {
         let larger = ExactDecimal::parse_positive("1.1").unwrap();
 
         assert!(smaller < larger);
+    }
+
+    #[test]
+    fn checked_add_handles_different_scales_exactly() {
+        let left = ExactDecimal::parse_positive("1.20").unwrap();
+        let right = ExactDecimal::parse_positive("2.003").unwrap();
+
+        assert_eq!(left.checked_add(right).unwrap().to_string(), "3.203");
+    }
+
+    #[test]
+    fn checked_add_reports_comparison_range_overflow() {
+        let value = ExactDecimal::parse_positive("100000000000000000000").unwrap();
+
+        assert!(value.checked_add(value).is_none());
     }
 
     #[test]
@@ -168,5 +200,63 @@ mod tests {
             ExactDecimal::parse_positive("0.1234567890123456789"),
             Err(DecimalParseError::ScaleTooLarge)
         );
+    }
+
+    proptest! {
+        #[test]
+        fn positive_decimal_parse_display_round_trips(value in "[0-9]{1,10}(\\.[0-9]{1,18})?") {
+            let Ok(parsed) = ExactDecimal::parse_positive(&value) else {
+                prop_assume!(false);
+                return Ok(());
+            };
+
+            let formatted = parsed.to_string();
+            prop_assert_eq!(ExactDecimal::parse_positive(&formatted).unwrap(), parsed);
+        }
+
+        #[test]
+        fn decimal_comparison_is_scale_independent(
+            whole in 1_u32..1_000_000,
+            fractional in 0_u32..1_000,
+            scale in 1_usize..=3,
+        ) {
+            let value = format!("{whole}.{fractional:0width$}", width = scale);
+            let same_value_with_extra_zero = format!("{value}0");
+            let left = ExactDecimal::parse_positive(&value).unwrap();
+            let right = ExactDecimal::parse_positive(&same_value_with_extra_zero).unwrap();
+            prop_assert_eq!(left, right);
+            prop_assert_eq!(left.cmp(&right), std::cmp::Ordering::Equal);
+        }
+
+        #[test]
+        fn checked_add_is_commutative_and_preserves_exact_scale(
+            left_whole in 1_u32..1_000_000,
+            right_whole in 1_u32..1_000_000,
+            left_fraction in 0_u32..1_000_000,
+            right_fraction in 0_u32..1_000_000,
+            left_scale in 0_u32..=6,
+            right_scale in 0_u32..=6,
+        ) {
+            let left = ExactDecimal::parse_positive(&scaled_decimal(left_whole, left_fraction, left_scale)).unwrap();
+            let right = ExactDecimal::parse_positive(&scaled_decimal(right_whole, right_fraction, right_scale)).unwrap();
+            let forward = left.checked_add(right).unwrap();
+            let reverse = right.checked_add(left).unwrap();
+
+            prop_assert_eq!(forward, reverse);
+            prop_assert_eq!(forward.comparison_units(), left.comparison_units() + right.comparison_units());
+        }
+    }
+
+    fn scaled_decimal(whole: u32, fraction: u32, scale: u32) -> String {
+        if scale == 0 {
+            return whole.to_string();
+        }
+
+        let divisor = 10_u32.pow(scale);
+        format!(
+            "{whole}.{:0width$}",
+            fraction % divisor,
+            width = scale as usize
+        )
     }
 }

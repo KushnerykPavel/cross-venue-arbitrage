@@ -63,6 +63,20 @@ impl LighterAdapter {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
+impl LighterAdapter {
+    #[doc(hidden)]
+    pub fn dev_fixture() -> Self {
+        Self::from_markets(
+            vec![LighterMarket::new(
+                MarketCoin::try_new("BTC").expect("static test market is valid"),
+                1,
+            )],
+            NonZeroUsize::new(1_000_000).expect("fixture capacity is nonzero"),
+        )
+    }
+}
+
 impl MarketDataAdapter for LighterAdapter {
     fn venue(&self) -> Venue {
         Venue::Lighter
@@ -824,6 +838,7 @@ mod tests {
 
     use domain::MarketCoin;
     use market_data::{LocalObservationTime, NormalizedMarketEvent, OrderBookStatus};
+    use proptest::prelude::*;
     use venue::{AdapterAction, MarketDataAdapter, MarketKey, ObservationClock};
 
     use super::{AdapterError, HandleOutcome, LighterAdapter, LighterOrderBookAdapter};
@@ -874,6 +889,12 @@ mod tests {
     fn update(begin_nonce: u64, nonce: u64, bid_size: &str) -> String {
         format!(
             r#"{{"type":"update/order_book","channel":"order_book:1","order_book":{{"asks":[{{"price":"101","size":"3"}}],"bids":[{{"price":"100","size":"{bid_size}"}}],"nonce":{nonce},"begin_nonce":{begin_nonce},"last_updated_at":2000}}}}"#
+        )
+    }
+
+    fn update_at(begin_nonce: u64, nonce: u64, price: u8, size: u8) -> String {
+        format!(
+            r#"{{"type":"update/order_book","channel":"order_book:1","order_book":{{"asks":[{{"price":"101","size":"3"}}],"bids":[{{"price":"{price}","size":"{size}"}}],"nonce":{nonce},"begin_nonce":{begin_nonce},"last_updated_at":2000}}}}"#
         )
     }
 
@@ -1035,5 +1056,36 @@ mod tests {
                 )
                 .is_empty()
         );
+    }
+
+    proptest! {
+        #[test]
+        fn valid_incremental_updates_preserve_sorted_positive_book_levels(
+            updates in prop::collection::vec((90_u8..=100, 0_u8..=5), 0..100),
+        ) {
+            let mut adapter = adapter();
+            let clock = Clock(Cell::new(20));
+            let initial = r#"{"type":"subscribed/order_book","channel":"order_book:1","order_book":{"asks":[{"price":"102","size":"2"}],"bids":[{"price":"80","size":"1"}],"nonce":10,"begin_nonce":0,"last_updated_at":1000}}"#;
+            adapter.handle_message(initial, received(20), &clock).unwrap();
+            let mut expected = std::collections::BTreeMap::from([(80_u8, 1_u8)]);
+
+            for (nonce, (price, size)) in (10_u64..).zip(updates) {
+                let frame = update_at(nonce, nonce + 1, price, size);
+                adapter.handle_message(&frame, received(nonce + 20), &clock).unwrap();
+                if size == 0 {
+                    expected.remove(&price);
+                } else {
+                    expected.insert(price, size);
+                }
+
+                let snapshot = adapter.book().current().unwrap();
+                prop_assert!(snapshot.bids().windows(2).all(|levels| levels[0].price() > levels[1].price()));
+                prop_assert!(snapshot.asks().windows(2).all(|levels| levels[0].price() < levels[1].price()));
+                prop_assert!(snapshot.bids().iter().chain(snapshot.asks()).all(|level| level.quantity().coefficient() > 0));
+                let actual = snapshot.bids().iter().map(|level| (level.price().to_string(), level.quantity().to_string())).collect::<Vec<_>>();
+                let expected = expected.iter().rev().map(|(price, quantity)| (price.to_string(), quantity.to_string())).collect::<Vec<_>>();
+                prop_assert_eq!(actual, expected);
+            }
+        }
     }
 }

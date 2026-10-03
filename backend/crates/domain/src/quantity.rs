@@ -15,6 +15,11 @@ impl Quantity {
     pub const fn scale(self) -> u8 {
         self.0.scale()
     }
+
+    /// Adds two quantities exactly, returning `None` on representational overflow.
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.0.checked_add(other.0).map(Self)
+    }
 }
 
 impl FromStr for Quantity {

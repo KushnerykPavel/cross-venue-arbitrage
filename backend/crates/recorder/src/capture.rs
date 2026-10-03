@@ -46,6 +46,9 @@ pub struct CaptureCoordinator {
     queue_full: bool,
 }
 
+// Boxing each accepted event would add a per-event allocation before the
+// recorder's already-bounded handoff.
+#[allow(clippy::large_enum_variant)]
 enum WriterCommand {
     Event(StoredEventV1),
     Finish {

@@ -1,5 +1,7 @@
 # Project Summary
 
+[![CI](https://github.com/KushnerykPavel/cross-venue-arbitrage/actions/workflows/ci.yml/badge.svg)](https://github.com/KushnerykPavel/cross-venue-arbitrage/actions/workflows/ci.yml)
+
 ## Goal
 
 Build a compact Rust research/execution platform for learning market

@@ -1,0 +1,36 @@
+[package]
+name = "venue-adapter-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+market-data = { path = "../crates/market-data" }
+venue = { path = "../crates/venue" }
+venue-aster = { path = "../crates/venue-aster", features = ["dev-fixtures"] }
+venue-binance = { path = "../crates/venue-binance", features = ["dev-fixtures"] }
+venue-lighter = { path = "../crates/venue-lighter", features = ["dev-fixtures"] }
+
+[[bin]]
+name = "binance_adapter"
+path = "fuzz_targets/binance_adapter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aster_adapter"
+path = "fuzz_targets/aster_adapter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lighter_adapter"
+path = "fuzz_targets/lighter_adapter.rs"
+test = false
+doc = false
+bench = false

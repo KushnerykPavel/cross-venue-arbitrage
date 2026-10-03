@@ -216,11 +216,11 @@ impl MarketDataEngine {
         let bid_matches = bbo
             .bid()
             .zip(snapshot.bids().first())
-            .map_or(false, |(a, b)| a == b);
+            .is_some_and(|(a, b)| a == b);
         let ask_matches = bbo
             .ask()
             .zip(snapshot.asks().first())
-            .map_or(false, |(a, b)| a == b);
+            .is_some_and(|(a, b)| a == b);
         if bid_matches && ask_matches {
             BestBidOfferStatus::Available
         } else {

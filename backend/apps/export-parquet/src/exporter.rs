@@ -9,8 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 use domain::Venue;
 use market_data::{
-    BestBidOffer, EventTimestamps, ExchangeTimeKind, ExchangeTimeUnit, MarketTradeIdentity,
-    NormalizedMarketEvent,
+    EventTimestamps, ExchangeTimeKind, ExchangeTimeUnit, MarketTradeIdentity, NormalizedMarketEvent,
 };
 use recorder::{CaptureStatus, ValidatedCapture, ValidationOptions};
 use serde::Serialize;
@@ -452,7 +451,7 @@ fn export_into(
                 return;
             }
             processed_events += 1;
-            if processed_events % EVENT_BATCH_ROWS == 0 {
+            if processed_events.is_multiple_of(EVENT_BATCH_ROWS) {
                 if let Err(error) = flush_event_batches(
                     &version_root,
                     date,
@@ -553,6 +552,9 @@ fn export_into(
     Ok(table_rows)
 }
 
+// This local batch flush coordinates independent table sinks in one call;
+// grouping the sinks would be a larger refactor without changing behavior.
+#[allow(clippy::too_many_arguments)]
 fn flush_event_batches(
     root: &Path,
     date: &str,
@@ -957,8 +959,8 @@ mod tests {
     use arrow_schema::DataType;
     use domain::{MarketCoin, Price, Quantity, Symbol};
     use market_data::{
-        BookLevel, EventTimestamps, ExchangeTimeKind, ExchangeTimeObservation, ExchangeTimeUnit,
-        LocalObservationTime, OrderBookSnapshot,
+        BestBidOffer, BookLevel, EventTimestamps, ExchangeTimeKind, ExchangeTimeObservation,
+        ExchangeTimeUnit, LocalObservationTime, OrderBookSnapshot,
     };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use recorder::{

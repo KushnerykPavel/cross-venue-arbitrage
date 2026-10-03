@@ -36,6 +36,27 @@ jupyter lab experiments/notebooks
 Start with `01_bbo_overview.ipynb`. It uses lazy Polars scans and does not
 load the 90-million-row `order_book_levels` table unless explicitly needed.
 
+## Receive-to-processing latency report
+
+Create a dated report from one Parquet export and its source capture manifest:
+
+```bash
+python -m experiments.analysis.latency_report \
+  experiments/data/parquet/btc-capture-001 \
+  --capture-manifest /absolute/DATA_DIR/captures/<capture-id>/manifest.json
+```
+
+The report summarizes p50, p95, p99, p99.9, and maximum latency per venue and
+lists the largest observations by Capture Sequence. It reads only the
+`order_book_events` and `market_trades` tables, which carry both monotonic
+timestamps; availability markers have only an observation timestamp and are
+not treated as decode-to-processing samples. The capture manifest supplies the
+collector label and build metadata omitted from the Parquet derivative. An
+optional `--capture-manifest` adds those source fields. If it is unavailable,
+the report labels host and collector build as missing rather than confusing
+them with the Parquet converter metadata. `--output PATH` selects another
+report path.
+
 ## Offline simulator
 
 The research simulator is under `experiments/simulator/`. It derives bounded

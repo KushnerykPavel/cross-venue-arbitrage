@@ -1,0 +1,1 @@
+{"type":"subscribed/order_book","channel":"order_book:1","order_book":{"asks":[{"price":"102","size":"2"}],"bids":[{"price":"100","size":"1"}],"nonce":10,"begin_nonce":0,"last_updated_at":1000}}

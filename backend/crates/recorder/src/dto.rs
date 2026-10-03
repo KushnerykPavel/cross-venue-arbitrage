@@ -436,9 +436,11 @@ fn stored_book_levels(snapshot: &OrderBookSnapshot, bids: bool) -> Vec<StoredBoo
     } else {
         snapshot.asks()
     };
-    let levels = (snapshot.venue() == Venue::Lighter)
-        .then(|| levels.iter().take(LIGHTER_STORAGE_LEVELS_PER_SIDE))
-        .map_or_else(|| levels.iter().take(levels.len()), |levels| levels);
+    let levels = if snapshot.venue() == Venue::Lighter {
+        levels.iter().take(LIGHTER_STORAGE_LEVELS_PER_SIDE)
+    } else {
+        levels.iter().take(levels.len())
+    };
     levels.copied().map(StoredBookLevelV1::from).collect()
 }
 

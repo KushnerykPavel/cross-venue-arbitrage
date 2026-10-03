@@ -120,10 +120,10 @@ impl ValidatedCapture {
                 manifest.capture_id,
                 expected_index,
                 |stored| {
-                    if conversion_error.is_none() {
-                        if let Err(source) = stored.to_normalized() {
-                            conversion_error = Some((stored.capture_sequence(), source));
-                        }
+                    if conversion_error.is_none()
+                        && let Err(source) = stored.to_normalized()
+                    {
+                        conversion_error = Some((stored.capture_sequence(), source));
                     }
                 },
             )

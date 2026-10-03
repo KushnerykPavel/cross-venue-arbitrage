@@ -105,6 +105,22 @@ impl BinanceAdapters {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
+impl BinanceAdapters {
+    #[doc(hidden)]
+    pub fn dev_fixture() -> Self {
+        let market = BinanceMarket::new(
+            MarketCoin::try_new("BTC").expect("static test market is valid"),
+            "BTCUSDT".into(),
+        );
+        let capacity = NonZeroUsize::new(1_000_000).expect("fixture capacity is nonzero");
+        Self {
+            depth: BinanceAdapter::from_markets(vec![market.clone()], capacity, BinanceFeed::Depth),
+            trades: BinanceAdapter::from_markets(vec![market], capacity, BinanceFeed::Trades),
+        }
+    }
+}
+
 impl MarketDataAdapter for BinanceAdapter {
     fn venue(&self) -> Venue {
         Venue::Binance

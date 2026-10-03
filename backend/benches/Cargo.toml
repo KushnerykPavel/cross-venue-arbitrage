@@ -1,0 +1,24 @@
+[package]
+name = "adapter-benches"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+domain = { path = "../crates/domain" }
+market-data = { path = "../crates/market-data" }
+venue = { path = "../crates/venue" }
+venue-aster = { path = "../crates/venue-aster", features = ["dev-fixtures"] }
+venue-binance = { path = "../crates/venue-binance", features = ["dev-fixtures"] }
+venue-lighter = { path = "../crates/venue-lighter", features = ["dev-fixtures"] }
+
+[dev-dependencies]
+criterion = "0.5"
+hdrhistogram = "7"
+
+[[bench]]
+name = "adapter_paths"
+path = "adapter_paths.rs"
+harness = false

@@ -239,7 +239,9 @@ mod tests {
 
     #[test]
     fn hyperliquid_is_disabled_unless_explicitly_enabled() {
-        assert!(!DEFAULT_ENABLE_HYPERLIQUID);
+        const {
+            assert!(!DEFAULT_ENABLE_HYPERLIQUID);
+        }
     }
 
     #[test]

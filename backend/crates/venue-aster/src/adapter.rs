@@ -74,6 +74,20 @@ impl AsterAdapter {
     }
 }
 
+#[cfg(feature = "dev-fixtures")]
+impl AsterAdapter {
+    #[doc(hidden)]
+    pub fn dev_fixture() -> Self {
+        Self::from_markets(
+            vec![AsterMarket::new(
+                MarketCoin::try_new("BTC").expect("static test market is valid"),
+                "BTCUSDT".into(),
+            )],
+            NonZeroUsize::new(1_000_000).expect("fixture capacity is nonzero"),
+        )
+    }
+}
+
 impl MarketDataAdapter for AsterAdapter {
     fn venue(&self) -> Venue {
         Venue::Aster
